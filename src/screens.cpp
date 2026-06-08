@@ -7,27 +7,31 @@
 
 // ── Shared helpers ────────────────────────────────────────────────────────
 
+// Battery lives in the top band now (top-right), so the whole area below the
+// y19 divider belongs to the main readout.
 static void drawBatteryBar() {
-    const int x = 0, y = 56, w = 20, h = 8;
+    const int w = 16, h = 7, y = 0;
     bool draw = true;
     if (app.pwr.flashActive) draw = (millis() / 200) % 2 == 0;
-    if (!draw) return;
 
-    display.drawRect(x, y, w, h, SSD1306_WHITE);
-    display.fillRect(x + w, y + 2, 2, h - 4, SSD1306_WHITE);   // terminal nub
-
-    int fill = (w - 2) * app.pwr.stablePct / 100;
-    if (fill > 0) display.fillRect(x + 1, y + 1, fill, h - 2, SSD1306_WHITE);
+    char buf[6];
+    if (app.pwr.source == POWER_USB) snprintf(buf, sizeof(buf), "USB");
+    else                             snprintf(buf, sizeof(buf), "%d%%", app.pwr.stablePct);
 
     display.setTextSize(1);
-    display.setCursor(x + w + 6, y);
-    if (app.pwr.source == POWER_USB) {
-        display.print("USB");
-    } else {
-        char buf[6];
-        snprintf(buf, sizeof(buf), "%d%%", app.pwr.stablePct);
-        display.print(buf);
+    int16_t x1, y1; uint16_t tw, th;
+    display.getTextBounds(buf, 0, 0, &x1, &y1, &tw, &th);
+    int textX = 127 - (int)tw;
+    int bx    = textX - 4 - (w + 2);
+
+    if (draw) {
+        display.drawRect(bx, y, w, h, SSD1306_WHITE);
+        display.fillRect(bx + w, y + 2, 2, h - 4, SSD1306_WHITE);   // terminal nub
+        int fill = (w - 2) * app.pwr.stablePct / 100;
+        if (fill > 0) display.fillRect(bx + 1, y + 1, fill, h - 2, SSD1306_WHITE);
     }
+    display.setCursor(textX, y);
+    display.print(buf);
 }
 
 static void centeredText(const char* s, int y, int size) {
@@ -42,20 +46,21 @@ static void centeredText(const char* s, int y, int size) {
 // Filled square = selected channel; small dot = used channel; bare pixel =
 // unused. This is the "channel toggle" — the rotary scrubs across it.
 static void drawNavBar() {
+    const int navY   = 11;
     const int pitch  = 13;
     const int totalW = NUM_CHANNELS * pitch;
     const int startX = (128 - totalW) / 2;
     for (int i = 0; i < NUM_CHANNELS; i++) {
         int cx = startX + i * pitch + pitch / 2;
         if (i == app.currentChannel) {
-            display.fillRect(cx - 4, 0, 9, 8, SSD1306_WHITE);
+            display.fillRect(cx - 4, navY, 9, 7, SSD1306_WHITE);
         } else if (channelUsed(app.channels[i])) {
-            display.fillRect(cx - 1, 3, 3, 3, SSD1306_WHITE);
+            display.fillRect(cx - 1, navY + 2, 3, 3, SSD1306_WHITE);
         } else {
-            display.drawPixel(cx, 5, SSD1306_WHITE);
+            display.drawPixel(cx, navY + 3, SSD1306_WHITE);
         }
     }
-    display.drawFastHLine(0, 10, 128, SSD1306_WHITE);
+    display.drawFastHLine(0, 19, 128, SSD1306_WHITE);   // top band divider (y0-19)
 }
 
 // ── Current-section timeline ──────────────────────────────────────────────
@@ -64,7 +69,7 @@ static void drawNavBar() {
 // leading edge. All other metadata lives on the printout, not the screen.
 static void drawTimeline(const Channel& c) {
     const int x0 = 6, barW = 116;     // VIS_WINDOW_DAYS spans x0 .. x0+barW
-    const int barY = 44, barH = 8;
+    const int barY = 58, barH = 5;    // pinned to the bottom edge
 
     // 3-month baseline scale
     display.drawFastHLine(x0, barY + barH, barW + 1, SSD1306_WHITE);
@@ -78,27 +83,28 @@ static void drawTimeline(const Channel& c) {
     // chevron marks the latest date (the leading edge of the live section)
     int tipX = x0 + fillW;
     if (tipX > x0 + barW) tipX = x0 + barW;
-    display.fillTriangle(tipX - 3, barY - 7, tipX + 3, barY - 7, tipX, barY - 1, SSD1306_WHITE);
+    display.fillTriangle(tipX - 3, barY - 6, tipX + 3, barY - 6, tipX, barY - 1, SSD1306_WHITE);
 }
 
-// ── Main screen — minimal: only the current elapsed section + timeline ─────
+// ── Main screen — the elapsed-section count is the hero, timeline below ────
 static void drawMain() {
     const Channel& c = app.channels[app.currentChannel];
 
     if (!channelUsed(c)) {
-        centeredText("press to begin", 30, 1);
+        centeredText("press to begin", 36, 1);
         return;
     }
 
-    char buf[12];
-    snprintf(buf, sizeof(buf), "%lud", (unsigned long)channelCurrentSectionDays(c));
-    centeredText(buf, 12, 3);
+    // zero-padded day count, no unit — "07", "64", "213"
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%02lu", (unsigned long)channelCurrentSectionDays(c));
+    centeredText(buf, 20, 4);
     drawTimeline(c);
 }
 
 // ── "Section off?" confirm modal ──────────────────────────────────────────
 static void drawConfirm() {
-    const int bx = 6, by = 14, bw = 116, bh = 40;
+    const int bx = 6, by = 22, bw = 116, bh = 40;
     display.fillRect(bx, by, bw, bh, SSD1306_BLACK);
     display.drawRect(bx, by, bw, bh, SSD1306_WHITE);
     char buf[24];
@@ -112,7 +118,7 @@ static void drawConfirm() {
 
 // ── Long-hold action menu ──────────────────────────────────────────────────
 static void drawMenu() {
-    const int bx = 18, by = 13, bw = 92, bh = 42;
+    const int bx = 18, by = 22, bw = 92, bh = 40;
     display.fillRect(bx, by, bw, bh, SSD1306_BLACK);
     display.drawRect(bx, by, bw, bh, SSD1306_WHITE);
     const char* items[MENU_COUNT] = { "Print", "Settings", "Cancel" };
