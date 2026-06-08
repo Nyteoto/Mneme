@@ -42,7 +42,7 @@ static void handleSerial() {
     } else if (cmd.startsWith("PRINT ")) {
         int n = cmd.substring(6).toInt();
         if (n >= 1 && n <= NUM_CHANNELS) printChannel((uint8_t)(n - 1));
-        else Serial.println("ERROR: PRINT 1-9");
+        else Serial.println("ERROR: PRINT 1-8");
 
     } else if (cmd == "STATUS") {
         for (int i = 0; i < NUM_CHANNELS; i++) {
@@ -88,7 +88,7 @@ static void handleSerial() {
         Serial.println("SCAN done.");
 
     } else if (cmd == "HELP") {
-        Serial.println("COMMANDS: RESET DATA | DEMO | PRINT [1-9] | STATUS | BATT | SCAN | HELP");
+        Serial.println("COMMANDS: RESET DATA | DEMO | PRINT [1-8] | STATUS | BATT | SCAN | HELP");
 
     } else if (cmd.length() > 0) {
         Serial.println("Unknown command. Type HELP.");

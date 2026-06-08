@@ -76,7 +76,6 @@ const DemoSpec DEMO[NUM_CHANNELS] = {
     { 0, {} },                       // ch5: unused
     { 0, {} },                       // ch6: unused
     { 0, {} },                       // ch7: unused
-    { 0, {} },                       // ch8: unused
 };
 }
 

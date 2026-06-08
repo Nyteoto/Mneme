@@ -30,7 +30,7 @@
 #define PRINTER_BAUD    9600
 
 // ── Channels / sections (the new data model) ──────────────────────────────
-#define NUM_CHANNELS    9     // usable rotary positions (one switch pin is dead)
+#define NUM_CHANNELS    8     // uniquely-readable detents (see ROTARY_ORDER notes)
 #define MAX_SECTIONS   16     // boundaries stored per channel
 #define SECS_PER_DAY   86400UL
 
@@ -90,12 +90,15 @@ enum MenuItem { MENU_PRINT, MENU_SETTINGS, MENU_CANCEL, MENU_COUNT };
 enum SettingField { SET_FONT, SET_BOLD, SET_BARW, SET_DONE, SET_COUNT };
 
 // ── Rotary switch: logical channel index → physical MCP pin ────────────────
-// PROVISIONAL 9-channel map: the legacy 10-entry table was
-//   {7, 6, 5, 10, 4, 3, 2, 1, 0, 9}
-// Channel 3 sat on pin 5 (GPA5), which is dead on this unit, so it's dropped.
-// Run the serial `SCAN` command and rotate through every detent to confirm
-// the true pin-per-position wiring, then finalise this list.
-static const int ROTARY_ORDER[NUM_CHANNELS] = {7, 6, 10, 4, 3, 2, 1, 0, 9};
+// Confirmed by the serial SCAN sweep. Physical detent order (one direction) is
+//   pin9(dead), 0, 1, 2, 3, 4, 10, 5, 6, 7
+// Two hardware faults on this unit:
+//   • GPA4–GPA5 are solder-bridged: pins 4 & 5 always read LOW together, so
+//     readRotaryPos() reports 4 for both. Pin 5 is therefore unusable as its
+//     own channel and is omitted; its detent harmlessly re-selects pin 4's.
+//   • GPB1 (pin 9) is a dead line (never LOW): that detent is unused.
+// Result: 8 uniquely-readable detents, in turn order:
+static const int ROTARY_ORDER[NUM_CHANNELS] = {0, 1, 2, 3, 4, 10, 6, 7};
 #define ROTARY_COUNT NUM_CHANNELS
 
 // MCP pins to configure/scan (full 16 so a stray-pin detent is detectable).
