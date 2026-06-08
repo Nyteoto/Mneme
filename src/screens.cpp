@@ -141,10 +141,13 @@ static void drawMain() {
         return;
     }
 
-    // zero-padded day count, no unit — "07", "64", "213"
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%02lu", (unsigned long)channelCurrentSectionDays(c));
-    centeredText(buf, 20, 4);
+    // zero-padded day count, no unit — "07", "64", "213". Shrink past 3 digits
+    // so wide counts (e.g. "8086") still fit and stay vertically centered.
+    char buf[12];
+    int len = snprintf(buf, sizeof(buf), "%02lu", (unsigned long)channelCurrentSectionDays(c));
+    int size = (len <= 3) ? 4 : (len == 4) ? 3 : 2;
+    int y    = (size == 4) ? 20 : (size == 3) ? 24 : 28;
+    centeredText(buf, y, size);
     drawTimeline(c);
 }
 
