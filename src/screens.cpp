@@ -71,39 +71,65 @@ static void fillDither(int x, int y, int w, int h) {
                 display.drawPixel(x + xx, y + yy, SSD1306_WHITE);
 }
 
-// Contiguous section bars within the rolling VIS_WINDOW_DAYS window ending at
-// "now". Each section is a block whose width = its duration; new sections stack
-// to the right onto the still-visible older ones; sections older than the
-// window scroll off the left. The current (ongoing) section is solid; completed
-// sections are dithered. A chevron pins the latest date at the right edge.
-static void drawSectionBars(const Channel& c, int x0, int W, int barY, int barH) {
+// Ordered-dither fill at a given density (level 0..16) via a 4x4 Bayer matrix.
+// Used to animate the current section's bit-density for a smooth "breathing" blink.
+static void fillDensity(int x, int y, int w, int h, int level) {
+    static const uint8_t BAYER4[4][4] = {
+        {  0,  8,  2, 10 },
+        { 12,  4, 14,  6 },
+        {  3, 11,  1,  9 },
+        { 15,  7, 13,  5 }
+    };
+    for (int yy = 0; yy < h; yy++)
+        for (int xx = 0; xx < w; xx++)
+            if (BAYER4[(y + yy) & 3][(x + xx) & 3] < level)
+                display.drawPixel(x + xx, y + yy, SSD1306_WHITE);
+}
+
+// Slow breathe: density oscillates ~50%..100% on a gentle triangle (~2s period).
+static int currentBlinkLevel() {
+    const uint32_t period = 2000;
+    float phase = (millis() % period) / (float)period;     // 0..1
+    float tri   = phase < 0.5f ? phase * 2.0f : (1.0f - phase) * 2.0f;  // 0..1..0
+    return 8 + (int)(tri * 8.0f + 0.5f);                   // 8..16
+}
+
+// Contiguous section bars, left-anchored at x0. The drawn length grows with the
+// channel's age at a constant scale (maxW px == VIS_WINDOW_DAYS days): a young
+// channel is a short bar at the edge that elongates over time, capping at maxW
+// (= 2/3 of the screen). Once full it rolls — older sections scroll off the left
+// while the chevron (now) holds at the cap. Current section solid, past dithered.
+static void drawSectionBars(const Channel& c, int x0, int maxW, int barY, int barH) {
     const int GAP = 3;                  // divider between stacked sections
     uint32_t now = nowUnix();
     if (now == 0) return;
-    uint32_t winDur   = (uint32_t)VIS_WINDOW_DAYS * SECS_PER_DAY;
-    uint32_t winStart = (now > winDur) ? now - winDur : 0;
+
+    uint32_t winSecs   = (uint32_t)VIS_WINDOW_DAYS * SECS_PER_DAY;
+    uint32_t totalSecs = (now > c.startUnix) ? now - c.startUnix : 0;
+    uint32_t visSecs   = totalSecs < winSecs ? totalSecs : winSecs;   // grows, then caps
+    uint32_t winStart  = now - visSecs;
 
     for (uint32_t i = 0; i < c.sectionCount; i++) {
         uint32_t segStart = c.sectionStart[i];
         uint32_t segEnd   = (i + 1 < c.sectionCount) ? c.sectionStart[i + 1] : now;
-        if (segEnd <= winStart || segStart >= now) continue;   // outside window
+        if (segEnd <= winStart) continue;                  // scrolled off the left
         if (segStart < winStart) segStart = winStart;
-        if (segEnd   > now)      segEnd   = now;
 
-        int xa = x0 + (int)((uint64_t)W * (segStart - winStart) / winDur);
-        int xb = x0 + (int)((uint64_t)W * (segEnd   - winStart) / winDur);
+        int xa = x0 + (int)((uint64_t)maxW * (segStart - winStart) / winSecs);
+        int xb = x0 + (int)((uint64_t)maxW * (segEnd   - winStart) / winSecs);
         int w  = xb - xa - GAP;
         if (w < 1) w = 1;
-        if (i == c.sectionCount - 1) display.fillRect(xa, barY, w, barH, SSD1306_WHITE); // current: solid
-        else                         fillDither(xa, barY, w, barH);                       // past: dithered
+        if (i == c.sectionCount - 1) fillDensity(xa, barY, w, barH, currentBlinkLevel()); // current: breathing
+        else                         fillDither(xa, barY, w, barH);                        // past: dithered
     }
 
-    int tipX = x0 + W;                  // chevron = now, at the right edge
-    display.fillTriangle(tipX - 3, barY - 5, tipX + 3, barY - 5, tipX, barY - 1, SSD1306_WHITE);
+    int nowX = x0 + (int)((uint64_t)maxW * visSecs / winSecs);   // grows to x0+maxW, then holds
+    display.fillTriangle(nowX - 3, barY - 5, nowX + 3, barY - 5, nowX, barY - 1, SSD1306_WHITE);
 }
 
 static void drawTimeline(const Channel& c) {
-    drawSectionBars(c, 6, 116, 58, 5);  // bottom edge of the main screen
+    // left-anchored at x2; caps at ~2/3 of the 128px screen (x2..x86)
+    drawSectionBars(c, 2, 84, 58, 5);
 }
 
 // ── Main screen — the elapsed-section count is the hero, timeline below ────
