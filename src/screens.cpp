@@ -45,22 +45,21 @@ static void centeredText(const char* s, int y, int size) {
 // ── Top navigation bar: channel positions, centered ───────────────────────
 // Filled square = selected channel; small dot = used channel; bare pixel =
 // unused. This is the "channel toggle" — the rotary scrubs across it.
+// Channel indicator: a single labeled bar at top-left, level with the battery.
 static void drawNavBar() {
-    const int navY   = 11;
-    const int pitch  = 13;
-    const int totalW = NUM_CHANNELS * pitch;
-    const int startX = (128 - totalW) / 2;
-    for (int i = 0; i < NUM_CHANNELS; i++) {
-        int cx = startX + i * pitch + pitch / 2;
-        if (i == app.currentChannel) {
-            display.fillRect(cx - 4, navY, 9, 7, SSD1306_WHITE);
-        } else if (channelUsed(app.channels[i])) {
-            display.fillRect(cx - 1, navY + 2, 3, 3, SSD1306_WHITE);
-        } else {
-            display.drawPixel(cx, navY + 3, SSD1306_WHITE);
-        }
-    }
-    display.drawFastHLine(0, 19, 128, SSD1306_WHITE);   // top band divider (y0-19)
+    char buf[8];
+    snprintf(buf, sizeof(buf), "CH %d", app.currentChannel + 1);
+    display.setTextSize(1);
+    int16_t x1, y1; uint16_t tw, th;
+    display.getTextBounds(buf, 0, 0, &x1, &y1, &tw, &th);
+
+    const int padX = 3;
+    const int bw = (int)tw + padX * 2, bh = 9;
+    display.fillRect(0, 0, bw, bh, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
+    display.setCursor(padX, 1);
+    display.print(buf);
+    display.setTextColor(SSD1306_WHITE);
 }
 
 // ── Current-section timeline ──────────────────────────────────────────────
@@ -70,9 +69,6 @@ static void drawNavBar() {
 static void drawTimeline(const Channel& c) {
     const int x0 = 6, barW = 116;     // VIS_WINDOW_DAYS spans x0 .. x0+barW
     const int barY = 58, barH = 5;    // pinned to the bottom edge
-
-    // 3-month baseline scale
-    display.drawFastHLine(x0, barY + barH, barW + 1, SSD1306_WHITE);
 
     uint32_t cur   = channelCurrentSectionDays(c);
     uint32_t shown = cur > VIS_WINDOW_DAYS ? VIS_WINDOW_DAYS : cur;
