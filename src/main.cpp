@@ -10,12 +10,12 @@
 #include "config.h"
 #include "peripherals.h"
 #include "state.h"
-#include "audio.h"
 #include "power.h"
 #include "storage.h"
-#include "game.h"
+#include "channels.h"
 #include "screens.h"
 #include "input.h"
+#include "print.h"
 
 // ── Peripheral objects (extern-declared in peripherals.h) ──────────────────
 Adafruit_SSD1306  display(128, 64, OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
@@ -30,56 +30,41 @@ static void handleSerial() {
     cmd.toUpperCase();
 
     if (cmd == "RESET DATA") {
-        app.game      = GameState{};
-        app.heatmap   = HeatmapState{};
-        app.taskPrio  = TaskPrioState{};
-        app.savedDate = app.today;
+        channelsClear();
         saveData();
-        Serial.println("DATA RESET");
+        Serial.println("CHANNELS CLEARED");
 
-    } else if (cmd.startsWith("VOL ")) {
-        int pct = cmd.substring(4).toInt();
-        if (pct >= 0 && pct <= 100) {
-            app.volume = pct / 100.0f;
-            app.dirty  = true;
-            saveData();
-            Serial.printf("VOLUME: %d%%\n", pct);
-            playTone(440, 200, 0.1f);
-            delay(50);
-            audioShutdown();
-        } else {
-            Serial.println("ERROR: 0-100");
-        }
+    } else if (cmd == "DEMO") {
+        channelsInitDemo();
+        saveData();
+        Serial.println("DEMO DATA LOADED");
 
-    } else if (cmd == "VOL") {
-        Serial.printf("VOLUME: %d%%\n", (int)(app.volume * 100));
-
-    } else if (cmd == "TEST AUDIO") {
-        playStartupChime();
+    } else if (cmd.startsWith("PRINT ")) {
+        int n = cmd.substring(6).toInt();
+        if (n >= 1 && n <= NUM_CHANNELS) printChannel((uint8_t)(n - 1));
+        else Serial.println("ERROR: PRINT 1-10");
 
     } else if (cmd == "STATUS") {
-        Serial.printf("LEVEL:   %d\n",  app.game.level);
-        Serial.printf("EXP:     %.1f / %.1f\n", app.game.exp, app.game.expReq);
-        Serial.printf("BUTTONS: %lu\n", (unsigned long)app.game.btnCount);
-        Serial.printf("STREAK:  %d\n",  app.heatmap.streak);
-        Serial.printf("POWER:   %s\n",  app.pwr.source == POWER_USB ? "USB" : "BATTERY");
+        for (int i = 0; i < NUM_CHANNELS; i++) {
+            const Channel& c = app.channels[i];
+            if (!channelUsed(c)) continue;
+            Serial.printf("CH%-2d  %lud  S%lu\n", i + 1,
+                          (unsigned long)channelTotalDays(c),
+                          (unsigned long)c.sectionCount);
+        }
+        Serial.printf("POWER:   %s\n", app.pwr.source == POWER_USB ? "USB" : "BATTERY");
         Serial.printf("VOLTAGE: %.2fV\n", readBatteryVoltage());
-        Serial.printf("BATT%%:   %d%%\n", batteryPercent(readBatteryVoltage()));
         const char* states[] = {"ACTIVE", "SLEEP", "SHUTDOWN"};
-        Serial.printf("STATE:   %s\n",  states[app.pwr.device]);
+        Serial.printf("STATE:   %s\n", states[app.pwr.device]);
 
     } else if (cmd == "BATT") {
         int raw = analogRead(BATT_ADC_PIN);
         float adcV = (float)raw / ADC_MAX * 3.3f;
-        float battV = adcV * BATT_DIVIDER;
-        Serial.printf("ADC raw: %d\n", raw);
-        Serial.printf("ADC voltage (GPIO28): %.3fV\n", adcV);
-        Serial.printf("Battery (x%.1f): %.3fV\n", BATT_DIVIDER, battV);
-        Serial.println("Measure actual battery voltage with a multimeter,");
-        Serial.println("then use: BATT_DIVIDER = actual_V / battV * current_BATT_DIVIDER");
+        Serial.printf("ADC raw: %d  GPIO28: %.3fV  Batt: %.3fV\n",
+                      raw, adcV, adcV * BATT_DIVIDER);
 
     } else if (cmd == "HELP") {
-        Serial.println("COMMANDS: RESET DATA | VOL [0-100] | TEST AUDIO | STATUS | BATT | HELP");
+        Serial.println("COMMANDS: RESET DATA | DEMO | PRINT [1-10] | STATUS | BATT | HELP");
 
     } else if (cmd.length() > 0) {
         Serial.println("Unknown command. Type HELP.");
@@ -91,17 +76,9 @@ static void handleSerial() {
 void setup() {
     Serial.begin(115200);
 
-    // Seed RNG from ADC noise
-    uint32_t seed = 0;
-    for (int i = 0; i < 16; i++) {
-        seed = (seed << 2) ^ (uint32_t)analogRead(BATT_ADC_PIN) ^ micros();
-        delay(1);
-    }
-    randomSeed(seed);
-
     storageInit();
 
-    // Display must come before Wire.begin() — it is SPI, not I2C
+    // Display is SPI; it must init before Wire.begin().
     if (!display.begin(SSD1306_SWITCHCAPVCC)) { while (true); }
     display.clearDisplay();
     display.setTextColor(SSD1306_WHITE);
@@ -109,12 +86,10 @@ void setup() {
 
     Wire.begin();
 
-    // RTC: check if device found and running; set compile-time fallback if not
     if (!rtc.begin()) {
-        // Could not find RTC on I2C — halt or continue without time
-        // For now: continue; day-rollover simply won't fire
+        // No RTC found — timestamps will read 0; day-counts stay at 0 but the
+        // device still runs. (RTC is required for real history.)
     } else if (!rtc.isrunning()) {
-        // Clock found but not ticking (first use or dead backup battery)
         rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
     }
 
@@ -123,40 +98,32 @@ void setup() {
 
     powerInit();
     inputInit();
-    loadData();
 
-    // Sync today's date; checkDayRollover also sets app.today from RTC
-    checkDayRollover();
-
-    // If no valid save was found (fresh device or wiped EEPROM), write clean
-    // defaults immediately so the next boot loads correct v6 data straight away.
-    if (!app.savedDate.valid()) {
-        app.savedDate = app.today;
+    // Fresh device (or wiped EEPROM): seed demo data so the UI has something
+    // to render while we design it, then persist it.
+    if (!loadData()) {
+        channelsInitDemo();
         saveData();
     }
 
-    app.taskPrio.firstUseToday = (app.taskPrio.logCount == 0);
     app.lastSaveTime = millis();
 
-    // Read the current rotary position at boot so lastRotaryIdx starts valid.
-    // Without this, the first physical movement sets lastRotaryIdx but can't
-    // compute a direction (needs two known positions), so the first rotation
-    // after boot is always silently dropped.
+    // Seed the rotary position so the first turn has a known origin and the
+    // current channel matches the physical switch at boot.
     for (int i = 0; i < 11; i++) {
         if (mcp.digitalRead(i) == LOW) {
             app.lastRotaryPos = i;
+            int idx = -1;
             for (int j = 0; j < ROTARY_COUNT; j++) {
-                if (ROTARY_ORDER[j] == i) { app.lastRotaryIdx = j; break; }
+                if (ROTARY_ORDER[j] == i) { idx = j; break; }
             }
+            app.lastRotaryIdx = idx;
+            if (idx != -1) app.currentChannel = (uint8_t)idx;
             break;
         }
     }
 
-    // Attempt initial source check (may not fire if millis < POWER_CHECK_MS)
     powerTick();
-
-    playStartupChime();
-
     Serial.println("MNEME READY — type HELP for commands");
 }
 
@@ -165,7 +132,6 @@ void setup() {
 void loop() {
     powerTick();
 
-    // Allow USB to revive a shutdown state
     if (app.pwr.device == STATE_SHUTDOWN && app.pwr.source == POWER_USB) {
         wakeUp();
     }
@@ -178,31 +144,10 @@ void loop() {
             updateBatteryLEDs();
             handleButton();
             handleRotary();
-            checkDayRollover();
-            updateLevelUp();
+            uiTick();
             checkAutoSleep();
 
-            if (app.screen == SCREEN_HOME) updateTaskEval();
-
-            // Stopwatch checkpoint and limit enforcement
-            if (app.taskPrio.running) {
-                uint32_t swElapsed = millis() - app.taskPrio.startTime;
-                if (swElapsed >= SW_LIMIT_MS) {
-                    app.taskPrio.running   = false;
-                    app.taskPrio.startTime = 0;
-                    app.swLimitNotif      = true;
-                    app.swLimitNotifStart  = millis();
-                    saveData();
-                } else {
-                    static uint32_t lastSwCheckpoint = 0;
-                    if (millis() - lastSwCheckpoint >= 60000UL) {
-                        lastSwCheckpoint = millis();
-                        saveData();
-                    }
-                }
-            }
-
-            // Dirty-flag EEPROM flush: only write every SAVE_INTERVAL_MS or on events
+            // Dirty-flag EEPROM flush: write at most every SAVE_INTERVAL_MS.
             if (app.dirty && millis() - app.lastSaveTime >= SAVE_INTERVAL_MS) {
                 saveData();
             }
@@ -212,12 +157,12 @@ void loop() {
 
         case STATE_SLEEP:
             handleSleepInput();
-            checkAutoSleep();       // may transition to shutdown
+            checkAutoSleep();
             checkEmergencyShutdown();
             break;
 
         case STATE_SHUTDOWN:
-            handleSleepInput();     // still allow button wake if USB restores power
+            handleSleepInput();
             delay(500);
             break;
     }

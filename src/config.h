@@ -15,93 +15,77 @@
 #define VBUS_PIN    24   // HIGH when USB bus is powered
 #define BATT_ADC_PIN 28
 
-// ── Audio I2S → MAX98357A ─────────────────────────────────────────────────
+// ── Audio I2S → MAX98357A (kept wired, no longer used for fanfare) ─────────
 #define I2S_BCLK  7    // bit clock
 #define I2S_DOUT  6    // data
-// LRCLK = I2S_BCLK + 1 = pin 8 (assigned automatically by earlephilhower I2S lib)
 
 // ── MCP23X17 ──────────────────────────────────────────────────────────────
 #define MCP_ADDR 0x20
 
-// ── EEPROM layout v7 ──────────────────────────────────────────────────────
-// Each slot's type determines the byte count consumed by EEPROM.put().
-// Total used: ~70 bytes of 512 available.
-#define EEPROM_SIZE          512
-#define ADDR_MAGIC             0   // uint16_t (2)
-#define ADDR_VERSION           2   // uint8_t  (1)
-#define ADDR_LEVEL             4   // int32_t  (4)
-#define ADDR_EXP               8   // float    (4)
-#define ADDR_EXP_REQ          12   // float    (4)
-#define ADDR_BTN_COUNT        16   // uint32_t (4)
-#define ADDR_VOLUME           20   // float    (4)
-#define ADDR_LAST_DAY         24   // int16_t  (2)
-#define ADDR_LAST_MONTH       26   // int16_t  (2)
-#define ADDR_LAST_YEAR        28   // int16_t  (2)
-#define ADDR_TIMER_LOGS       32   // 3x uint32_t (12)
-#define ADDR_TIMER_COUNT      44   // int16_t  (2)
-#define ADDR_HEAT_DAY         48   // int16_t  (2)
-#define ADDR_HEAT_MONTH       50   // int16_t  (2)
-#define ADDR_HEAT_YEAR        52   // int16_t  (2)
-#define ADDR_STREAK           54   // int16_t  (2)
-#define ADDR_GRID             56   // uint32_t (4)
-#define ADDR_LOGGED_TODAY     60   // uint8_t  (1)
-#define ADDR_SW_RUNNING       61   // uint8_t  (1) — was stopwatch running at last save?
-#define ADDR_SW_ELAPSED       62   // uint32_t (4) — elapsed ms at last checkpoint
-#define ADDR_SW_SAVE_UNIX     66   // uint32_t (4) — RTC unix time of last checkpoint
-
-#define EEPROM_MAGIC    0x55AA
-#define EEPROM_VERSION  7      // bumped: stopwatch persistence across power loss
-
-// ── Audio ─────────────────────────────────────────────────────────────────
+// ── Audio (amp kept wired; module compiles though fanfare is gone) ────────
 #define AUDIO_SAMPLE_RATE 44100
 
+// ── Thermal printer (UART) — module not yet wired; pin reserved ───────────
+#define PRINTER_TX_PIN  8     // RP2040 → printer RX (placeholder until module lands)
+#define PRINTER_BAUD    9600
+
+// ── Channels / sections (the new data model) ──────────────────────────────
+#define NUM_CHANNELS   10     // one per rotary position
+#define MAX_SECTIONS   16     // boundaries stored per channel
+#define SECS_PER_DAY   86400UL
+
+// ── EEPROM layout v8 — channels replace the gamified state ────────────────
+// Channels are written as whole POD structs via EEPROM.put(), so the only
+// fixed offsets we need are the header fields and the channel block base.
+#define EEPROM_SIZE        2048
+#define ADDR_MAGIC            0   // uint16_t (2)
+#define ADDR_VERSION         2   // uint8_t  (1)
+#define ADDR_VOLUME          4   // float    (4)
+#define ADDR_PRINTCFG        8   // PrintConfig struct
+#define ADDR_CHANNELS       32   // Channel[NUM_CHANNELS] packed from here
+
+#define EEPROM_MAGIC    0x55AA
+#define EEPROM_VERSION  8        // bumped: tracker rewrite (channels/sections)
+
 // ── Battery thresholds — Li-ion healthy range ─────────────────────────────
-#define BATT_FULL_V      4.05f   // healthy full (not 4.2 to reduce stress)
-#define BATT_WARN_V      3.60f   // start warning LEDs
-#define BATT_CRITICAL_V  3.50f   // red LED
-#define BATT_FLASH_V     3.55f   // flash battery indicator
-#define BATT_SHUTDOWN_V  3.48f   // graceful shutdown
-#define BATT_EMPTY_V     3.45f   // emergency shutdown
-#define BATT_CUTOFF_V    3.30f   // hard cutoff, no recovery except USB
-#define BATT_RECOVERY_V  3.60f   // re-activation threshold
+#define BATT_FULL_V      4.05f
+#define BATT_WARN_V      3.60f
+#define BATT_CRITICAL_V  3.50f
+#define BATT_FLASH_V     3.55f
+#define BATT_SHUTDOWN_V  3.48f
+#define BATT_EMPTY_V     3.45f
+#define BATT_CUTOFF_V    3.30f
+#define BATT_RECOVERY_V  3.60f
 #define BATT_DIVIDER     2.0f
 #define ADC_MAX          4095.0f
 
-// ── Timing (ms unless noted) ──────────────────────────────────────────────
+// ── Timing (ms) ───────────────────────────────────────────────────────────
 #define SLEEP_TIMEOUT_MS     600000UL   // 10 min active → sleep
 #define SHUTDOWN_TIMEOUT_MS  300000UL   // 5 min sleep → shutdown
 #define SAVE_INTERVAL_MS     300000UL   // flush dirty EEPROM every 5 min
 #define POWER_CHECK_MS         5000UL   // USB/battery source check interval
-#define HOLD_MS                 700UL   // button hold threshold
-#define EVAL_DISPLAY_MS       10000UL   // task-eval message display duration
-#define EVAL_ANIM_MS           5000UL   // expanding-circle animation duration
-#define TASK_INIT_MS         120000UL   // 2-minute focus countdown
-#define LEVEL_UP_MS            8500UL   // level-up animation duration
-#define HEATMAP_FLASH_MS       2000UL
-
-// ── Heatmap ───────────────────────────────────────────────────────────────
-#define HEATMAP_CELLS         21
-#define HEATMAP_COLS           7
-#define HEATMAP_ROWS           3
-#define HEATMAP_FLASH_CYCLES   8
-#define HEATMAP_COMPLETE_EXP  50.0f
-
-// ── Stopwatch limit ───────────────────────────────────────────────────────
-#define SW_LIMIT_MS     3600000000UL  // 1000 hours in ms (display buffer limit)
-#define SW_NOTIF_MS          10000UL  // notification display duration
-
-// ── Workday reference for task-priority percentage ─────────────────────────
-#define WORKDAY_MS  57600000UL   // 16 hours
-
-// ── Task evaluation messages ──────────────────────────────────────────────
-#define EVAL_MSG_COUNT 11
-
-// ── Rotary switch: physical pin → logical screen order ────────────────────
-static const int ROTARY_ORDER[10] = {7, 6, 5, 10, 4, 3, 2, 1, 0, 9};
-#define ROTARY_COUNT 10
+#define HOLD_MS                 700UL   // long-hold threshold → open menu
+#define CONFIRM_TIMEOUT_MS     6000UL   // "section off?" auto-cancels after this
+#define PRINTING_MS            2500UL   // "Printing..." splash duration (stub)
 
 // ── Enums ─────────────────────────────────────────────────────────────────
-enum PowerSource   { POWER_BATTERY, POWER_USB };
-enum DeviceState   { STATE_ACTIVE, STATE_SLEEP, STATE_SHUTDOWN };
-enum ScreenMode    { SCREEN_HOME, SCREEN_TASK_INIT, SCREEN_TASK_PRIO, SCREEN_HEATMAP, SCREEN_COUNT };
-enum TaskEvalState { EVAL_INACTIVE, EVAL_HOLDING, EVAL_DISPLAYING };
+enum PowerSource { POWER_BATTERY, POWER_USB };
+enum DeviceState { STATE_ACTIVE, STATE_SLEEP, STATE_SHUTDOWN };
+
+// UI modes — the single button + rotary drive all of these.
+enum UiMode {
+    UI_MAIN,      // nav bar + bar chart for the selected channel
+    UI_CONFIRM,   // "section off?" — second press commits, rotate cancels
+    UI_MENU,      // long-hold action menu (Print / Settings / Cancel)
+    UI_SETTINGS,  // print-config editor with live preview
+    UI_PRINTING   // transient "Printing..." splash
+};
+
+enum MenuItem { MENU_PRINT, MENU_SETTINGS, MENU_CANCEL, MENU_COUNT };
+
+// Print-settings editable fields (last entry = exit row).
+enum SettingField { SET_FONT, SET_BOLD, SET_BARW, SET_DONE, SET_COUNT };
+
+// ── Rotary switch: physical MCP pin → logical channel order ────────────────
+static const int ROTARY_ORDER[NUM_CHANNELS] = {7, 6, 5, 10, 4, 3, 2, 1, 0, 9};
+#define ROTARY_COUNT NUM_CHANNELS

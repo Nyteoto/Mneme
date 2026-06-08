@@ -2,5 +2,4 @@
 
 void storageInit();
 void saveData();
-void loadData();
-void checkDayRollover();
+bool loadData();   // returns true if a valid v8 save was loaded

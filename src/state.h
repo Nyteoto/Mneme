@@ -1,107 +1,66 @@
 #pragma once
 #include "config.h"
 #include <stdint.h>
-#include <Arduino.h>   // HIGH, LOW, etc.
+#include <Arduino.h>   // HIGH, LOW
 
-// ── Full calendar date ─────────────────────────────────────────────────────
-// Storing year+month+day avoids the month-boundary modulo bug in the original
-// code where (day - lastDay + 31) % 31 gave wrong results at month end.
-struct SavedDate {
-    int16_t day   = -1;
-    int16_t month = -1;
-    int16_t year  = -1;
-
-    bool valid() const { return year > 0; }
-    bool operator==(const SavedDate& o) const {
-        return day == o.day && month == o.month && year == o.year;
-    }
-    bool operator!=(const SavedDate& o) const { return !(*this == o); }
-
-    // Returns true if advancing this date by one calendar day equals 'next'.
-    // Used to decide whether a heatmap streak is unbroken.
-    bool isYesterdayOf(const SavedDate& next) const;
+// ── Channel: one real-life domain, tracked as a never-resetting timeline ───
+// startUnix is the first-ever press (0 = channel never used). Each press
+// appends the current RTC unix time to sectionStart[], closing the previous
+// bar and opening a new one. The running day-count is simply (now-startUnix);
+// it never resets, because it measures elapsed life in the domain, not a streak.
+struct Channel {
+    uint32_t startUnix = 0;
+    uint32_t sectionStart[MAX_SECTIONS] = {};
+    uint32_t sectionCount = 0;            // uint32 keeps the struct padding-free
 };
 
-// ── Sub-state groups ───────────────────────────────────────────────────────
-struct GameState {
-    int32_t  level    = 1;
-    float    exp      = 0.0f;
-    float    expReq   = 10.0f;
-    uint32_t btnCount = 0;
+// ── Print configuration (persisted, edited on the Settings screen) ─────────
+struct PrintConfig {
+    uint8_t fontSize = 1;   // 1..3
+    uint8_t bold     = 0;   // 0 / 1
+    uint8_t barWidth = 4;   // chart bar thickness on the printout
+    uint8_t reserved = 0;
 };
 
-struct HeatmapState {
-    SavedDate lastDate;
-    int16_t   streak      = 0;
-    bool      grid[HEATMAP_CELLS] = {};
-    bool      loggedToday = false;
-    bool      flashActive = false;
-    uint32_t  flashStart  = 0;
-};
-
-struct TaskInitState {
-    uint32_t startTime = 0;
-    bool     running   = false;
-    bool     finished  = false;
-};
-
-struct TaskPrioState {
-    uint32_t startTime    = 0;
-    bool     running      = false;
-    uint32_t logs[3]      = {};
-    int16_t  logCount     = 0;
-    bool     firstUseToday = true;
-};
-
-struct EvalState {
-    TaskEvalState mode      = EVAL_INACTIVE;
-    uint32_t      holdStart = 0;
-    uint32_t      dispStart = 0;
-    uint8_t       msgIndex  = 0;
-};
-
+// ── Power / battery management ─────────────────────────────────────────────
 struct PowerMgr {
-    DeviceState device              = STATE_ACTIVE;
-    PowerSource source              = POWER_BATTERY;
-    float       stableV             = BATT_FULL_V;
-    int16_t     stablePct           = 100;
-    uint32_t    lastActivity        = 0;
-    uint32_t    sleepStart          = 0;
-    uint32_t    lastSrcCheck        = 0;
+    DeviceState device                = STATE_ACTIVE;
+    PowerSource source                = POWER_BATTERY;
+    float       stableV               = BATT_FULL_V;
+    int16_t     stablePct             = 100;
+    uint32_t    lastActivity          = 0;
+    uint32_t    sleepStart            = 0;
+    uint32_t    lastSrcCheck          = 0;
     bool        flashActive           = false;
     uint32_t    flashStart            = 0;
     bool        ignoreNextWakeRelease = false;
-    float       filteredBattV         = 0.0f;  // EMA-smoothed voltage, 0 = not yet seeded
+    float       filteredBattV         = 0.0f;
 };
 
 // ── Master application state ───────────────────────────────────────────────
 struct AppState {
-    GameState    game;
-    HeatmapState heatmap;
-    TaskInitState taskInit;
-    TaskPrioState taskPrio;
-    EvalState    eval;
-    PowerMgr     pwr;
+    Channel     channels[NUM_CHANNELS];
+    PrintConfig print;
+    PowerMgr    pwr;
 
-    ScreenMode screen       = SCREEN_HOME;
+    // UI / navigation
+    UiMode  ui              = UI_MAIN;
+    uint8_t currentChannel  = 0;        // 0..NUM_CHANNELS-1, selected by rotary
+    uint8_t menuSel         = MENU_PRINT;
+    uint8_t settingField    = SET_FONT;
+    uint32_t uiTimer        = 0;        // confirm / printing splash deadline anchor
+
+    // Input tracking
     int  lastRotaryPos      = -1;
     int  lastRotaryIdx      = -1;
     bool lastBtn            = HIGH;
     uint32_t btnPressStart  = 0;
     bool btnHeld            = false;
-    float volume            = 0.2f;
 
-    bool     levelUpActive  = false;
-    uint32_t levelUpStart   = 0;
+    float volume            = 0.2f;     // retained (amp wired) though unused for now
 
-    bool     swLimitNotif      = false;
-    uint32_t swLimitNotifStart = 0;
-
-    SavedDate today;       // refreshed each loop from RTC
-    SavedDate savedDate;   // last-known date persisted in EEPROM
-
-    bool     dirty        = false;  // true when EEPROM flush is needed
-    uint32_t lastSaveTime = 0;
+    bool     dirty          = false;    // true when an EEPROM flush is pending
+    uint32_t lastSaveTime   = 0;
 };
 
 extern AppState app;

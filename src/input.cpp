@@ -1,10 +1,10 @@
 #include "input.h"
 #include "config.h"
 #include "state.h"
-#include "game.h"
-#include "audio.h"
+#include "channels.h"
 #include "storage.h"
 #include "power.h"
+#include "print.h"
 #include "peripherals.h"
 #include <Arduino.h>
 
@@ -13,7 +13,7 @@ void inputInit() {
     pinMode(BUTTON_LED, OUTPUT);
 }
 
-// ── Rotary switch ─────────────────────────────────────────────────────────
+// ── Rotary switch (10-position absolute → channel / menu selector) ─────────
 
 static int readRotaryPos() {
     for (int i = 0; i < 11; i++) {
@@ -35,74 +35,83 @@ void handleRotary() {
 
     app.pwr.lastActivity = millis();
     int idx = rotaryPosToIndex(pos);
-    if (idx != -1 && app.lastRotaryIdx != -1) {
-        int dir = idx - app.lastRotaryIdx;
-        int next = ((int)app.screen + (dir > 0 ? 1 : -1) + SCREEN_COUNT) % SCREEN_COUNT;
-        app.screen = (ScreenMode)next;
+
+    if (idx != -1) {
+        int dir = (app.lastRotaryIdx != -1) ? (idx - app.lastRotaryIdx) : 0;
+        switch (app.ui) {
+            case UI_MAIN:
+                app.currentChannel = (uint8_t)idx;     // absolute switch → channel
+                break;
+            case UI_CONFIRM:
+                app.ui = UI_MAIN;                       // turning away cancels
+                app.currentChannel = (uint8_t)idx;
+                break;
+            case UI_MENU:
+                if (dir) app.menuSel = (uint8_t)((app.menuSel + (dir > 0 ? 1 : -1) + MENU_COUNT) % MENU_COUNT);
+                break;
+            case UI_SETTINGS:
+                if (dir) app.settingField = (uint8_t)((app.settingField + (dir > 0 ? 1 : -1) + SET_COUNT) % SET_COUNT);
+                break;
+            default: break;
+        }
     }
+
     app.lastRotaryPos = pos;
     app.lastRotaryIdx = idx;
 }
 
-// ── Button ────────────────────────────────────────────────────────────────
+// ── Button actions ─────────────────────────────────────────────────────────
 
-static void handleShortPress() {
-    switch (app.screen) {
-        case SCREEN_HOME:
-            if (app.eval.mode == EVAL_INACTIVE) {
-                app.game.btnCount++;
-                addExp(1.0f);
-                app.dirty = true;
-            }
-            break;
-
-        case SCREEN_TASK_INIT:
-            if (!app.taskInit.running && !app.taskInit.finished) {
-                app.taskInit.startTime = millis();
-                app.taskInit.running   = true;
-            } else if (app.taskInit.finished) {
-                app.taskInit.running  = false;
-                app.taskInit.finished = false;
-            }
-            break;
-
-        case SCREEN_TASK_PRIO:
-            if (!app.taskPrio.running) {
-                app.taskPrio.startTime = millis();
-                app.taskPrio.running   = true;
-            } else {
-                uint32_t elapsed = millis() - app.taskPrio.startTime;
-                app.taskPrio.running = false;
-                if (app.taskPrio.logCount < 3) {
-                    app.taskPrio.logs[app.taskPrio.logCount++] = elapsed;
-                    app.taskPrio.firstUseToday = false;
-                    app.dirty = true;
-                    saveData();
-                }
-            }
-            break;
-
-        case SCREEN_HEATMAP:
-            heatmapButtonPressed();
-            break;
-
-        default: break;
+static void onLongHold() {
+    // Long-hold from the main view opens the action menu.
+    if (app.ui == UI_MAIN) {
+        app.ui      = UI_MENU;
+        app.menuSel = MENU_PRINT;
     }
 }
 
-static void handleHoldRelease() {
-    if (app.screen != SCREEN_HOME) return;
-    if (app.eval.mode != EVAL_HOLDING) return;
+static void onShortPress() {
+    uint32_t now = millis();
+    switch (app.ui) {
+        case UI_MAIN:
+            // arm the "are you sure" confirm before committing a boundary
+            app.ui      = UI_CONFIRM;
+            app.uiTimer = now;
+            break;
 
-    app.eval.mode     = EVAL_DISPLAYING;
-    app.eval.dispStart = millis();
-    app.eval.msgIndex  = (uint8_t)random(EVAL_MSG_COUNT);
+        case UI_CONFIRM:
+            channelMarkSection(app.currentChannel);
+            app.ui = UI_MAIN;
+            break;
 
-    app.game.btnCount++;
-    addExp(10.0f);
-    app.dirty = true;
-    saveData();
-    playSlowChime();
+        case UI_MENU:
+            switch (app.menuSel) {
+                case MENU_PRINT:
+                    printChannel(app.currentChannel);
+                    app.ui      = UI_PRINTING;
+                    app.uiTimer = now;
+                    break;
+                case MENU_SETTINGS:
+                    app.ui           = UI_SETTINGS;
+                    app.settingField = SET_FONT;
+                    break;
+                default:   // MENU_CANCEL
+                    app.ui = UI_MAIN;
+                    break;
+            }
+            break;
+
+        case UI_SETTINGS:
+            switch (app.settingField) {
+                case SET_FONT: app.print.fontSize = app.print.fontSize >= 3 ? 1 : app.print.fontSize + 1; app.dirty = true; break;
+                case SET_BOLD: app.print.bold ^= 1; app.dirty = true; break;
+                case SET_BARW: app.print.barWidth = app.print.barWidth >= 10 ? 2 : app.print.barWidth + 2; app.dirty = true; break;
+                default:       saveData(); app.ui = UI_MENU; break;   // SET_DONE
+            }
+            break;
+
+        default: break;   // UI_PRINTING auto-dismisses
+    }
 }
 
 void handleButton() {
@@ -111,52 +120,47 @@ void handleButton() {
 
     digitalWrite(BUTTON_LED, cur == LOW ? HIGH : LOW);
 
-    // Press start
+    // press start
     if (cur == LOW && app.lastBtn == HIGH) {
         app.pwr.lastActivity = now;
         app.btnPressStart    = now;
         app.btnHeld          = false;
     }
 
-    // Held past threshold — start task eval animation on home screen
+    // crossed the hold threshold while still down
     if (cur == LOW && app.lastBtn == LOW) {
         if (!app.btnHeld && !app.pwr.ignoreNextWakeRelease &&
                 (now - app.btnPressStart) >= HOLD_MS) {
             app.btnHeld = true;
-            if (app.screen == SCREEN_HOME && app.eval.mode == EVAL_INACTIVE) {
-                app.eval.mode      = EVAL_HOLDING;
-                app.eval.holdStart = now;
-            }
+            onLongHold();
         }
     }
 
-    // Release
+    // release
     if (cur == HIGH && app.lastBtn == LOW) {
         if (app.pwr.ignoreNextWakeRelease) {
             app.pwr.ignoreNextWakeRelease = false;
-        } else if (app.btnHeld) {
-            handleHoldRelease();
-        } else {
-            handleShortPress();
+        } else if (!app.btnHeld) {
+            onShortPress();
         }
         app.btnHeld = false;
-    }
-
-    // Task init timer complete check (fires from display update but also guard here)
-    if (app.screen == SCREEN_TASK_INIT && app.taskInit.running) {
-        if (now - app.taskInit.startTime >= TASK_INIT_MS) {
-            app.taskInit.running  = false;
-            app.taskInit.finished = true;
-            playTaskCompleteDing();
-        }
     }
 
     app.lastBtn = cur;
 }
 
-// ── Sleep-state polling ───────────────────────────────────────────────────
-// Runs instead of handleButton/handleRotary in sleep and shutdown states.
-// Kept very lightweight to minimise wake-up latency.
+// ── UI timeouts ─────────────────────────────────────────────────────────────
+
+void uiTick() {
+    uint32_t now = millis();
+    if (app.ui == UI_CONFIRM && now - app.uiTimer >= CONFIRM_TIMEOUT_MS) {
+        app.ui = UI_MAIN;
+    } else if (app.ui == UI_PRINTING && now - app.uiTimer >= PRINTING_MS) {
+        app.ui = UI_MAIN;
+    }
+}
+
+// ── Sleep-state polling ─────────────────────────────────────────────────────
 
 void handleSleepInput() {
     static uint32_t lastCheck = 0;

@@ -207,9 +207,8 @@ static void clocksRestore() {
 void enterDormant() {
     enterSleep();
 
-    // Snapshot RTC before sleep so we can correct stopwatch millis on wake
-    uint32_t rtcBefore = app.taskPrio.running ? rtc.now().unixtime() : 0;
-
+    // Section timestamps come straight from the RTC, so nothing in the new
+    // model needs millis()-correction across sleep — just dormant and resume.
     gpio_set_dormant_irq_enabled(PIN_BUTTON, GPIO_IRQ_EDGE_FALL, true);
     clocksToROSC();
 
@@ -219,21 +218,6 @@ void enterDormant() {
     clocksRestore();
     gpio_acknowledge_irq(PIN_BUTTON, GPIO_IRQ_EDGE_FALL);
     gpio_set_dormant_irq_enabled(PIN_BUTTON, GPIO_IRQ_EDGE_FALL, false);
-
-    // Stretch startTime backward by real sleep duration so elapsed stays correct
-    if (app.taskPrio.running && rtcBefore > 0) {
-        uint32_t sleepSecs = rtc.now().unixtime() - rtcBefore;
-        app.taskPrio.startTime -= sleepSecs * 1000UL;
-
-        // If the corrected elapsed exceeds the display limit, discard — don't save
-        if ((uint32_t)(millis() - app.taskPrio.startTime) >= SW_LIMIT_MS) {
-            app.taskPrio.running   = false;
-            app.taskPrio.startTime = 0;
-            app.swLimitNotif      = true;
-            app.swLimitNotifStart  = millis();
-            // No saveData() here — discard the exceeded state silently
-        }
-    }
 
     app.pwr.ignoreNextWakeRelease = true;
     wakeUp();
