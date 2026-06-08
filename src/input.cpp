@@ -16,7 +16,7 @@ void inputInit() {
 // ── Rotary switch (10-position absolute → channel / menu selector) ─────────
 
 static int readRotaryPos() {
-    for (int i = 0; i < 11; i++) {
+    for (int i = 0; i < MCP_PIN_COUNT; i++) {
         if (mcp.digitalRead(i) == LOW) return i;
     }
     return -1;

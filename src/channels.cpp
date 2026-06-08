@@ -68,16 +68,15 @@ void channelsClear() {
 namespace {
 struct DemoSpec { int count; int daysAgo[6]; };
 const DemoSpec DEMO[NUM_CHANNELS] = {
-    { 4, {86, 65, 36, 14} },         // ch0: steady cadence, ~86d total
-    { 3, {40, 28, 10} },             // ch1: shorter history
-    { 4, {213, 150, 60, 12} },       // ch2: long plateaus, ~7 months
-    { 1, {7} },                      // ch3: freshly started, single bar
-    { 5, {120, 118, 116, 100, 40} }, // ch4: rapid burst then long hold
+    { 4, {86, 65, 36, 14} },         // ch0: current section = 14d
+    { 3, {40, 28, 10} },             // ch1: current section = 10d
+    { 4, {213, 150, 60, 12} },       // ch2: current section = 12d
+    { 1, {7} },                      // ch3: freshly started, 7d
+    { 5, {120, 118, 116, 100, 40} }, // ch4: current section = 40d
     { 0, {} },                       // ch5: unused
     { 0, {} },                       // ch6: unused
     { 0, {} },                       // ch7: unused
     { 0, {} },                       // ch8: unused
-    { 0, {} },                       // ch9: unused
 };
 }
 

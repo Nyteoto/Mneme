@@ -42,7 +42,7 @@ static void handleSerial() {
     } else if (cmd.startsWith("PRINT ")) {
         int n = cmd.substring(6).toInt();
         if (n >= 1 && n <= NUM_CHANNELS) printChannel((uint8_t)(n - 1));
-        else Serial.println("ERROR: PRINT 1-10");
+        else Serial.println("ERROR: PRINT 1-9");
 
     } else if (cmd == "STATUS") {
         for (int i = 0; i < NUM_CHANNELS; i++) {
@@ -63,8 +63,32 @@ static void handleSerial() {
         Serial.printf("ADC raw: %d  GPIO28: %.3fV  Batt: %.3fV\n",
                       raw, adcV, adcV * BATT_DIVIDER);
 
+    } else if (cmd == "SCAN") {
+        // Rotary diagnostic: rotate slowly through every detent; this prints
+        // the MCP pin(s) reading LOW each time the active set changes, giving
+        // the true physical-position → pin map (and exposing dead pins).
+        Serial.println("ROTARY SCAN (25s) — turn through every detent slowly.");
+        for (int i = 0; i < MCP_PIN_COUNT; i++) mcp.pinMode(i, INPUT_PULLUP);
+        int lastMask = -1;
+        uint32_t t0 = millis();
+        while (millis() - t0 < 25000UL) {
+            int mask = 0;
+            for (int i = 0; i < MCP_PIN_COUNT; i++)
+                if (mcp.digitalRead(i) == LOW) mask |= (1 << i);
+            if (mask != lastMask) {
+                lastMask = mask;
+                Serial.print("  LOW: ");
+                if (mask == 0) Serial.print("(none)");
+                else for (int i = 0; i < MCP_PIN_COUNT; i++)
+                    if (mask & (1 << i)) { Serial.print(i); Serial.print(' '); }
+                Serial.println();
+            }
+            delay(40);
+        }
+        Serial.println("SCAN done.");
+
     } else if (cmd == "HELP") {
-        Serial.println("COMMANDS: RESET DATA | DEMO | PRINT [1-10] | STATUS | BATT | HELP");
+        Serial.println("COMMANDS: RESET DATA | DEMO | PRINT [1-9] | STATUS | BATT | SCAN | HELP");
 
     } else if (cmd.length() > 0) {
         Serial.println("Unknown command. Type HELP.");
@@ -94,7 +118,7 @@ void setup() {
     }
 
     if (!mcp.begin_I2C(MCP_ADDR)) { while (true); }
-    for (int i = 0; i < 11; i++) mcp.pinMode(i, INPUT_PULLUP);
+    for (int i = 0; i < MCP_PIN_COUNT; i++) mcp.pinMode(i, INPUT_PULLUP);
 
     powerInit();
     inputInit();
@@ -110,7 +134,7 @@ void setup() {
 
     // Seed the rotary position so the first turn has a known origin and the
     // current channel matches the physical switch at boot.
-    for (int i = 0; i < 11; i++) {
+    for (int i = 0; i < MCP_PIN_COUNT; i++) {
         if (mcp.digitalRead(i) == LOW) {
             app.lastRotaryPos = i;
             int idx = -1;

@@ -2,7 +2,15 @@
 #include "config.h"
 #include "state.h"
 #include "channels.h"
+#include "RTClib.h"
 #include <Arduino.h>
+
+// RTClib's DateTime epoch is 2000-01-01; our timestamps are unix (1970).
+static void fmtDate(char* buf, int n, uint32_t unix) {
+    if (unix < 946684800UL) { snprintf(buf, n, "----/--/--"); return; }
+    DateTime d(unix - 946684800UL);
+    snprintf(buf, n, "%04d/%02d/%02d", d.year(), d.month(), d.day());
+}
 
 // Stub thermal output. The strip is intentionally bare — Mneme prints the
 // skeleton; the meaning is written by hand in the user's journal.
@@ -22,8 +30,14 @@ void printChannel(uint8_t idx) {
         return;
     }
 
+    char startBuf[12], nowBuf[12];
+    fmtDate(startBuf, sizeof(startBuf), c.startUnix);
+    fmtDate(nowBuf,   sizeof(nowBuf),   nowUnix());
+
+    Serial.printf("  started   %s\n", startBuf);
+    Serial.printf("  today     %s\n", nowBuf);
     Serial.printf("  %lu days ongoing\n", (unsigned long)channelTotalDays(c));
-    Serial.printf("  %lu sections\n\n", (unsigned long)c.sectionCount);
+    Serial.printf("  %lu sections so far\n\n", (unsigned long)c.sectionCount);
 
     // longest section sets the ASCII bar scale
     uint32_t maxDays = 1;

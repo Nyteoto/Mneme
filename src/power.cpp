@@ -141,7 +141,7 @@ void enterSleep() {
     digitalWrite(GREEN_LED,  LOW);
     digitalWrite(RED_LED,    LOW);
     pinMode(BATT_ADC_PIN, INPUT);
-    for (int i = 0; i < 11; i++) mcp.pinMode(i, INPUT);
+    for (int i = 0; i < MCP_PIN_COUNT; i++) mcp.pinMode(i, INPUT);
     app.pwr.device    = STATE_SLEEP;
     app.pwr.sleepStart = millis();
 }
@@ -164,7 +164,7 @@ void wakeUp() {
     app.pwr.lastActivity = millis();
     // Bug fix: original code forgot to restore MCP pins after sleep,
     // making the rotary switch non-functional until next boot.
-    for (int i = 0; i < 11; i++) mcp.pinMode(i, INPUT_PULLUP);
+    for (int i = 0; i < MCP_PIN_COUNT; i++) mcp.pinMode(i, INPUT_PULLUP);
     display.ssd1306_command(SSD1306_DISPLAYON);
     digitalWrite(GREEN_LED, HIGH);
     delay(50);

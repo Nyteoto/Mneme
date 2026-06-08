@@ -38,12 +38,15 @@ static void centeredText(const char* s, int y, int size) {
     display.print(s);
 }
 
-// ── Top navigation bar: 10 channel positions ──────────────────────────────
-// Filled square = selected channel; small dot = used channel; bare tick =
+// ── Top navigation bar: channel positions, centered ───────────────────────
+// Filled square = selected channel; small dot = used channel; bare pixel =
 // unused. This is the "channel toggle" — the rotary scrubs across it.
 static void drawNavBar() {
+    const int pitch  = 13;
+    const int totalW = NUM_CHANNELS * pitch;
+    const int startX = (128 - totalW) / 2;
     for (int i = 0; i < NUM_CHANNELS; i++) {
-        int cx = (i * 128) / NUM_CHANNELS + (128 / NUM_CHANNELS) / 2;
+        int cx = startX + i * pitch + pitch / 2;
         if (i == app.currentChannel) {
             display.fillRect(cx - 4, 0, 9, 8, SSD1306_WHITE);
         } else if (channelUsed(app.channels[i])) {
@@ -55,73 +58,42 @@ static void drawNavBar() {
     display.drawFastHLine(0, 10, 128, SSD1306_WHITE);
 }
 
-// ── Section bar chart for the selected channel ────────────────────────────
-static void drawBarChart(const Channel& c) {
-    const int baseline = 52, plotTop = 24, plotH = baseline - plotTop;
-    const int plotX0 = 2, plotW = 124;
-    int n = (int)c.sectionCount;
+// ── Current-section timeline ──────────────────────────────────────────────
+// One horizontal bar spanning a ~3-month window. The past is NOT drawn — only
+// the current section grows left→right, with a chevron pinned to "now" at the
+// leading edge. All other metadata lives on the printout, not the screen.
+static void drawTimeline(const Channel& c) {
+    const int x0 = 6, barW = 116;     // VIS_WINDOW_DAYS spans x0 .. x0+barW
+    const int barY = 44, barH = 8;
 
-    // longest section sets the vertical scale (min 1 to avoid /0)
-    uint32_t maxDays = 1;
-    for (int i = 0; i < n; i++) {
-        uint32_t d = channelSectionDays(c, i);
-        if (d > maxDays) maxDays = d;
-    }
+    // 3-month baseline scale
+    display.drawFastHLine(x0, barY + barH, barW + 1, SSD1306_WHITE);
 
-    int slot = plotW / n;
-    int barW = slot - 2; if (barW > 16) barW = 16; if (barW < 2) barW = 2;
+    uint32_t cur   = channelCurrentSectionDays(c);
+    uint32_t shown = cur > VIS_WINDOW_DAYS ? VIS_WINDOW_DAYS : cur;
+    int fillW = (int)((uint32_t)barW * shown / VIS_WINDOW_DAYS);
+    if (fillW < 2) fillW = 2;          // always show a nub on day 0
+    display.fillRect(x0, barY, fillW, barH, SSD1306_WHITE);
 
-    bool blink = (millis() / 400) % 2 == 0;
-    for (int i = 0; i < n; i++) {
-        uint32_t d = channelSectionDays(c, i);
-        int h = (int)((uint32_t)plotH * d / maxDays);
-        if (h < 1) h = 1;
-        int x = plotX0 + i * slot;
-        int y = baseline - h;
-        if (i == n - 1) {
-            // current (ongoing) section — outlined, gently blinking fill
-            display.drawRect(x, y, barW, h, SSD1306_WHITE);
-            if (blink && h > 2) display.fillRect(x + 1, y + 1, barW - 2, h - 2, SSD1306_WHITE);
-        } else {
-            display.fillRect(x, y, barW, h, SSD1306_WHITE);
-        }
-    }
-    display.drawFastHLine(plotX0, baseline + 1, plotW, SSD1306_WHITE);
+    // chevron marks the latest date (the leading edge of the live section)
+    int tipX = x0 + fillW;
+    if (tipX > x0 + barW) tipX = x0 + barW;
+    display.fillTriangle(tipX - 3, barY - 7, tipX + 3, barY - 7, tipX, barY - 1, SSD1306_WHITE);
 }
 
-// ── Main screen ────────────────────────────────────────────────────────────
+// ── Main screen — minimal: only the current elapsed section + timeline ─────
 static void drawMain() {
     const Channel& c = app.channels[app.currentChannel];
 
-    // info row
-    char buf[24];
-    display.setTextSize(1);
-    snprintf(buf, sizeof(buf), "CH%d", app.currentChannel + 1);
-    display.setCursor(2, 13);
-    display.print(buf);
-
     if (!channelUsed(c)) {
-        centeredText("press to begin", 34, 1);
+        centeredText("press to begin", 30, 1);
         return;
     }
 
-    uint32_t total = channelTotalDays(c);
-    uint32_t cur   = channelCurrentSectionDays(c);
-
-    snprintf(buf, sizeof(buf), "%lud", (unsigned long)total);
-    display.setTextSize(1);
-    int16_t x1, y1; uint16_t tw, th;
-    display.getTextBounds(buf, 0, 0, &x1, &y1, &tw, &th);
-    display.setCursor(64 - (int)tw / 2, 13);
-    display.print(buf);
-
-    snprintf(buf, sizeof(buf), "S%lu %lud",
-             (unsigned long)c.sectionCount, (unsigned long)cur);
-    display.getTextBounds(buf, 0, 0, &x1, &y1, &tw, &th);
-    display.setCursor(126 - (int)tw, 13);
-    display.print(buf);
-
-    drawBarChart(c);
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%lud", (unsigned long)channelCurrentSectionDays(c));
+    centeredText(buf, 12, 3);
+    drawTimeline(c);
 }
 
 // ── "Section off?" confirm modal ──────────────────────────────────────────

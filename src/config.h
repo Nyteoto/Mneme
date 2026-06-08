@@ -30,9 +30,12 @@
 #define PRINTER_BAUD    9600
 
 // ── Channels / sections (the new data model) ──────────────────────────────
-#define NUM_CHANNELS   10     // one per rotary position
+#define NUM_CHANNELS    9     // usable rotary positions (one switch pin is dead)
 #define MAX_SECTIONS   16     // boundaries stored per channel
 #define SECS_PER_DAY   86400UL
+
+// On-screen timeline window: the horizontal bar spans this many days.
+#define VIS_WINDOW_DAYS 90    // ~3 months visualized end-to-end
 
 // ── EEPROM layout v8 — channels replace the gamified state ────────────────
 // Channels are written as whole POD structs via EEPROM.put(), so the only
@@ -86,6 +89,14 @@ enum MenuItem { MENU_PRINT, MENU_SETTINGS, MENU_CANCEL, MENU_COUNT };
 // Print-settings editable fields (last entry = exit row).
 enum SettingField { SET_FONT, SET_BOLD, SET_BARW, SET_DONE, SET_COUNT };
 
-// ── Rotary switch: physical MCP pin → logical channel order ────────────────
-static const int ROTARY_ORDER[NUM_CHANNELS] = {7, 6, 5, 10, 4, 3, 2, 1, 0, 9};
+// ── Rotary switch: logical channel index → physical MCP pin ────────────────
+// PROVISIONAL 9-channel map: the legacy 10-entry table was
+//   {7, 6, 5, 10, 4, 3, 2, 1, 0, 9}
+// Channel 3 sat on pin 5 (GPA5), which is dead on this unit, so it's dropped.
+// Run the serial `SCAN` command and rotate through every detent to confirm
+// the true pin-per-position wiring, then finalise this list.
+static const int ROTARY_ORDER[NUM_CHANNELS] = {7, 6, 10, 4, 3, 2, 1, 0, 9};
 #define ROTARY_COUNT NUM_CHANNELS
+
+// MCP pins to configure/scan (full 16 so a stray-pin detent is detectable).
+#define MCP_PIN_COUNT 16
