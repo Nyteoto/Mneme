@@ -63,23 +63,36 @@ static void drawNavBar() {
 }
 
 // ── Current-section timeline ──────────────────────────────────────────────
-// One horizontal bar spanning a ~3-month window. The past is NOT drawn — only
-// the current section grows left→right, with a chevron pinned to "now" at the
-// leading edge. All other metadata lives on the printout, not the screen.
+// Contiguous section bars within the rolling VIS_WINDOW_DAYS window ending at
+// "now". Each section is a block whose width = its duration; new sections stack
+// to the right onto the still-visible older ones; sections older than the
+// window scroll off the left. A chevron pins the latest date at the right edge.
+static void drawSectionBars(const Channel& c, int x0, int W, int barY, int barH) {
+    uint32_t now = nowUnix();
+    if (now == 0) return;
+    uint32_t winDur   = (uint32_t)VIS_WINDOW_DAYS * SECS_PER_DAY;
+    uint32_t winStart = (now > winDur) ? now - winDur : 0;
+
+    for (uint32_t i = 0; i < c.sectionCount; i++) {
+        uint32_t segStart = c.sectionStart[i];
+        uint32_t segEnd   = (i + 1 < c.sectionCount) ? c.sectionStart[i + 1] : now;
+        if (segEnd <= winStart || segStart >= now) continue;   // outside window
+        if (segStart < winStart) segStart = winStart;
+        if (segEnd   > now)      segEnd   = now;
+
+        int xa = x0 + (int)((uint64_t)W * (segStart - winStart) / winDur);
+        int xb = x0 + (int)((uint64_t)W * (segEnd   - winStart) / winDur);
+        int w  = xb - xa - 1;          // 1px gap so stacked bars stay distinct
+        if (w < 1) w = 1;
+        display.fillRect(xa, barY, w, barH, SSD1306_WHITE);
+    }
+
+    int tipX = x0 + W;                  // chevron = now, at the right edge
+    display.fillTriangle(tipX - 3, barY - 5, tipX + 3, barY - 5, tipX, barY - 1, SSD1306_WHITE);
+}
+
 static void drawTimeline(const Channel& c) {
-    const int x0 = 6, barW = 116;     // VIS_WINDOW_DAYS spans x0 .. x0+barW
-    const int barY = 58, barH = 5;    // pinned to the bottom edge
-
-    uint32_t cur   = channelCurrentSectionDays(c);
-    uint32_t shown = cur > VIS_WINDOW_DAYS ? VIS_WINDOW_DAYS : cur;
-    int fillW = (int)((uint32_t)barW * shown / VIS_WINDOW_DAYS);
-    if (fillW < 2) fillW = 2;          // always show a nub on day 0
-    display.fillRect(x0, barY, fillW, barH, SSD1306_WHITE);
-
-    // chevron marks the latest date (the leading edge of the live section)
-    int tipX = x0 + fillW;
-    if (tipX > x0 + barW) tipX = x0 + barW;
-    display.fillTriangle(tipX - 3, barY - 6, tipX + 3, barY - 6, tipX, barY - 1, SSD1306_WHITE);
+    drawSectionBars(c, 6, 116, 58, 5);  // bottom edge of the main screen
 }
 
 // ── Main screen — the elapsed-section count is the hero, timeline below ────
@@ -174,15 +187,7 @@ static void drawSettings() {
     // timeline bar + chevron along the bottom of the printable area
     int barTh = app.print.barWidth; if (barTh < 1) barTh = 1; if (barTh > 6) barTh = 6;
     int barY  = by + bh - 4 - barTh;
-    uint32_t cur   = channelCurrentSectionDays(c);
-    uint32_t shown = cur > VIS_WINDOW_DAYS ? VIS_WINDOW_DAYS : cur;
-    int fullW = contentR - contentL;
-    int fillW = (int)((uint32_t)fullW * shown / VIS_WINDOW_DAYS);
-    if (fillW < 2) fillW = 2;
-    display.fillRect(contentL, barY, fillW, barTh, SSD1306_WHITE);
-    int tipX = contentL + fillW;
-    if (tipX > contentR) tipX = contentR;
-    display.fillTriangle(tipX - 3, barY - 5, tipX + 3, barY - 5, tipX, barY - 1, SSD1306_WHITE);
+    drawSectionBars(c, contentL, contentR - contentL, barY, barTh);
 
     // ── compact field row at the bottom ──
     char f0[8], f1[8], f2[8];

@@ -34,8 +34,9 @@
 #define MAX_SECTIONS   16     // boundaries stored per channel
 #define SECS_PER_DAY   86400UL
 
-// On-screen timeline window: the horizontal bar spans this many days.
-#define VIS_WINDOW_DAYS 90    // ~3 months visualized end-to-end
+// On-screen timeline window: the bar area spans this many days, ending at now.
+// Sections are drawn as contiguous bars within it; older ones scroll off left.
+#define VIS_WINDOW_DAYS 120   // rolling ~4-month window
 
 // ── EEPROM layout v8 — channels replace the gamified state ────────────────
 // Channels are written as whole POD structs via EEPROM.put(), so the only
