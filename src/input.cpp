@@ -43,6 +43,7 @@ void handleRotary() {
                 app.currentChannel = (uint8_t)idx;     // absolute switch → channel
                 break;
             case UI_CONFIRM:
+            case UI_CLEAR_CONFIRM:
                 app.ui = UI_MAIN;                       // turning away cancels
                 app.currentChannel = (uint8_t)idx;
                 break;
@@ -95,10 +96,19 @@ static void onShortPress() {
                     app.ui           = UI_SETTINGS;
                     app.settingField = SET_FONT;
                     break;
+                case MENU_CLEAR:
+                    app.ui      = UI_CLEAR_CONFIRM;   // confirm before wiping
+                    app.uiTimer = now;
+                    break;
                 default:   // MENU_CANCEL
                     app.ui = UI_MAIN;
                     break;
             }
+            break;
+
+        case UI_CLEAR_CONFIRM:
+            channelClear(app.currentChannel);
+            app.ui = UI_MAIN;
             break;
 
         case UI_SETTINGS:
@@ -153,7 +163,8 @@ void handleButton() {
 
 void uiTick() {
     uint32_t now = millis();
-    if (app.ui == UI_CONFIRM && now - app.uiTimer >= CONFIRM_TIMEOUT_MS) {
+    if ((app.ui == UI_CONFIRM || app.ui == UI_CLEAR_CONFIRM) &&
+            now - app.uiTimer >= CONFIRM_TIMEOUT_MS) {
         app.ui = UI_MAIN;
     } else if (app.ui == UI_PRINTING && now - app.uiTimer >= PRINTING_MS) {
         app.ui = UI_MAIN;

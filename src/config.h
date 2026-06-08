@@ -78,14 +78,15 @@ enum DeviceState { STATE_ACTIVE, STATE_SLEEP, STATE_SHUTDOWN };
 
 // UI modes — the single button + rotary drive all of these.
 enum UiMode {
-    UI_MAIN,      // nav bar + bar chart for the selected channel
-    UI_CONFIRM,   // "section off?" — second press commits, rotate cancels
-    UI_MENU,      // long-hold action menu (Print / Settings / Cancel)
-    UI_SETTINGS,  // print-config editor with live preview
-    UI_PRINTING   // transient "Printing..." splash
+    UI_MAIN,          // nav bar + bar chart for the selected channel
+    UI_CONFIRM,       // "section off?" — second press commits, rotate cancels
+    UI_MENU,          // long-hold action menu (Print / Settings / Clear / Cancel)
+    UI_SETTINGS,      // print-config editor with live preview
+    UI_PRINTING,      // transient "Printing..." splash
+    UI_CLEAR_CONFIRM  // "clear history?" — second press wipes the channel
 };
 
-enum MenuItem { MENU_PRINT, MENU_SETTINGS, MENU_CANCEL, MENU_COUNT };
+enum MenuItem { MENU_PRINT, MENU_SETTINGS, MENU_CLEAR, MENU_CANCEL, MENU_COUNT };
 
 // Print-settings editable fields (last entry = exit row).
 enum SettingField { SET_FONT, SET_BOLD, SET_BARW, SET_DONE, SET_COUNT };

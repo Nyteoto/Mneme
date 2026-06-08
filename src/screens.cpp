@@ -162,22 +162,34 @@ static void drawConfirm() {
     centeredText("turn  = cancel",  by + 28, 1);
 }
 
-// ── Long-hold action menu ──────────────────────────────────────────────────
-static void drawMenu() {
-    const int bx = 18, by = 22, bw = 92, bh = 40;
+// ── "Clear history?" confirm modal ─────────────────────────────────────────
+static void drawClearConfirm() {
+    const int bx = 6, by = 22, bw = 116, bh = 40;
     display.fillRect(bx, by, bw, bh, SSD1306_BLACK);
     display.drawRect(bx, by, bw, bh, SSD1306_WHITE);
-    const char* items[MENU_COUNT] = { "Print", "Settings", "Cancel" };
+    char buf[24];
+    snprintf(buf, sizeof(buf), "Clear CH%d history?", app.currentChannel + 1);
+    centeredText(buf, by + 6, 1);
+    centeredText("press = confirm", by + 18, 1);
+    centeredText("turn  = cancel",  by + 28, 1);
+}
+
+// ── Long-hold action menu ──────────────────────────────────────────────────
+static void drawMenu() {
+    const int bx = 18, by = 20, bw = 92, bh = 43;
+    display.fillRect(bx, by, bw, bh, SSD1306_BLACK);
+    display.drawRect(bx, by, bw, bh, SSD1306_WHITE);
+    const char* items[MENU_COUNT] = { "Print", "Settings", "Clear", "Cancel" };
     for (int i = 0; i < MENU_COUNT; i++) {
-        int rowY = by + 4 + i * 12;
+        int rowY = by + 3 + i * 10;
         if (i == app.menuSel) {
-            display.fillRect(bx + 2, rowY - 1, bw - 4, 11, SSD1306_WHITE);
+            display.fillRect(bx + 2, rowY - 1, bw - 4, 10, SSD1306_WHITE);
             display.setTextColor(SSD1306_BLACK);
         } else {
             display.setTextColor(SSD1306_WHITE);
         }
         display.setTextSize(1);
-        display.setCursor(bx + 8, rowY + 1);
+        display.setCursor(bx + 8, rowY);
         display.print(items[i]);
     }
     display.setTextColor(SSD1306_WHITE);
@@ -299,8 +311,9 @@ void updateDisplay() {
             drawNavBar();
             drawMain();
             drawBatteryBar();
-            if (app.ui == UI_CONFIRM) drawConfirm();
-            if (app.ui == UI_MENU)    drawMenu();
+            if (app.ui == UI_CONFIRM)       drawConfirm();
+            if (app.ui == UI_MENU)          drawMenu();
+            if (app.ui == UI_CLEAR_CONFIRM) drawClearConfirm();
             break;
     }
 

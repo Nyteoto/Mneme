@@ -56,6 +56,13 @@ void channelMarkSection(uint8_t idx) {
     saveData();
 }
 
+void channelClear(uint8_t idx) {
+    if (idx >= NUM_CHANNELS) return;
+    app.channels[idx] = Channel{};
+    app.dirty = true;
+    saveData();
+}
+
 void channelsClear() {
     for (int i = 0; i < NUM_CHANNELS; i++) app.channels[i] = Channel{};
 }

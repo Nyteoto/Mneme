@@ -21,5 +21,8 @@ void     channelMarkSection(uint8_t idx);
 // before any real data exists. Anchored to "now" so bars show varied lengths.
 void     channelsInitDemo();
 
+// Wipe one channel back to the unused state (persists).
+void     channelClear(uint8_t idx);
+
 // Wipe every channel back to the unused state.
 void     channelsClear();
