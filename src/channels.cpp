@@ -75,7 +75,7 @@ void channelsClear() {
 namespace {
 struct DemoSpec { int count; int daysAgo[6]; };
 const DemoSpec DEMO[NUM_CHANNELS] = {
-    { 4, {86, 65, 36, 14} },         // ch0: current section = 14d
+    { 1, {8086} },                   // ch0: one section, 22 years + 51 days
     { 3, {40, 28, 10} },             // ch1: current section = 10d
     { 4, {213, 150, 60, 12} },       // ch2: current section = 12d
     { 1, {7} },                      // ch3: freshly started, 7d
