@@ -169,6 +169,12 @@ void loop() {
             handleButton();
             handleRotary();
             uiTick();
+
+            // Blink the red status LED (GP14) while a print is in progress.
+            // Runs after updateBatteryLEDs so it overrides the battery state.
+            if (app.ui == UI_PRINTING)
+                digitalWrite(RED_LED, (millis() / 150) % 2 ? HIGH : LOW);
+
             checkAutoSleep();
 
             // Dirty-flag EEPROM flush: write at most every SAVE_INTERVAL_MS.

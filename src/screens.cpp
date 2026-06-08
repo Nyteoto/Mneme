@@ -226,6 +226,16 @@ static void drawSettings() {
     display.print(buf);
     display.setTextColor(SSD1306_WHITE);
 
+    // top-right metadata: total history days elapsed + current year
+    snprintf(buf, sizeof(buf), "%lud", (unsigned long)channelTotalDays(c));
+    display.getTextBounds(buf, 0, 0, &x1, &y1, &tw, &th);
+    display.setCursor(contentR - (int)tw, by + PX(2));
+    display.print(buf);
+    snprintf(buf, sizeof(buf), "%d", rtc.now().year());
+    display.getTextBounds(buf, 0, 0, &x1, &y1, &tw, &th);
+    display.setCursor(contentR - (int)tw, by + PX(2) + 9);
+    display.print(buf);
+
     // hero count — size = Font, double-struck when Bold is on
     snprintf(buf, sizeof(buf), "%02lu", (unsigned long)channelCurrentSectionDays(c));
     int fs = app.print.fontSize; if (fs < 1) fs = 1; if (fs > 3) fs = 3;
