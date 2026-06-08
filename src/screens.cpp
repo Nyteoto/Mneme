@@ -133,40 +133,78 @@ static void drawMenu() {
     display.setTextColor(SSD1306_WHITE);
 }
 
-// ── Print settings editor with a tiny live preview ─────────────────────────
+// ── Print settings editor — live preview of the 58x30mm paper cut ──────────
+// The box is drawn at the true 58:30 aspect of the receipt cut. Content is
+// inset to the 48mm printable width (5mm margins on 58mm stock) and mirrors
+// the on-screen UI: CH pill, the big elapsed-section count, timeline + chevron.
 static void drawSettings() {
+    const int   bx = 15, by = 1, bw = 97, bh = 50;   // 58x30mm @ ~1.67 px/mm
+    const float s  = (float)bw / 58.0f;
+    auto PX = [&](float mm) { return (int)(mm * s + 0.5f); };
+
+    display.drawRect(bx, by, bw, bh, SSD1306_WHITE);  // paper edge
+
+    const Channel& c = app.channels[app.currentChannel];
+    const int contentL = bx + PX(5);                  // 48mm printable region
+    const int contentR = bx + PX(53);
+
+    char buf[12];
+    int16_t x1, y1; uint16_t tw, th;
+
+    // CH pill (top-left of the printable area)
+    snprintf(buf, sizeof(buf), "CH %d", app.currentChannel + 1);
     display.setTextSize(1);
-    char buf[20];
-    const char* labels[SET_COUNT] = { "Font", "Bold", "BarW", "Done" };
-    for (int i = 0; i < SET_COUNT; i++) {
-        int rowY = 13 + i * 10;
-        bool sel = (i == app.settingField);
-        if (sel) { display.fillRect(0, rowY - 1, 70, 9, SSD1306_WHITE);
-                   display.setTextColor(SSD1306_BLACK); }
-        else      display.setTextColor(SSD1306_WHITE);
-        display.setCursor(2, rowY);
-        switch (i) {
-            case SET_FONT: snprintf(buf, sizeof(buf), "Font  %d", app.print.fontSize); break;
-            case SET_BOLD: snprintf(buf, sizeof(buf), "Bold  %s", app.print.bold ? "on" : "off"); break;
-            case SET_BARW: snprintf(buf, sizeof(buf), "BarW  %d", app.print.barWidth); break;
-            default:       snprintf(buf, sizeof(buf), "%s", labels[i]); break;
-        }
-        display.print(buf);
-    }
+    display.getTextBounds(buf, 0, 0, &x1, &y1, &tw, &th);
+    display.fillRect(contentL, by + PX(2), (int)tw + 4, 9, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
+    display.setCursor(contentL + 2, by + PX(2) + 1);
+    display.print(buf);
     display.setTextColor(SSD1306_WHITE);
 
-    // preview pane: three mock bars rendered with the current bar width
-    const int px = 80, baseline = 52;
-    display.drawRect(74, 12, 52, 44, SSD1306_WHITE);
-    int heights[3] = {12, 26, 18};
-    for (int i = 0; i < 3; i++) {
-        int x = px + i * (app.print.barWidth + 3);
-        display.fillRect(x, baseline - heights[i], app.print.barWidth, heights[i], SSD1306_WHITE);
-    }
-    display.setTextSize(app.print.fontSize > 2 ? 2 : app.print.fontSize);
-    display.setCursor(78, 14);
-    display.print("86d");
+    // hero count — size = Font, double-struck when Bold is on
+    snprintf(buf, sizeof(buf), "%02lu", (unsigned long)channelCurrentSectionDays(c));
+    int fs = app.print.fontSize; if (fs < 1) fs = 1; if (fs > 3) fs = 3;
+    int numY = by + PX(11);
+    display.setTextSize(fs);
+    display.setCursor(contentL, numY);
+    display.print(buf);
+    if (app.print.bold) { display.setCursor(contentL + 1, numY); display.print(buf); }
     display.setTextSize(1);
+
+    // timeline bar + chevron along the bottom of the printable area
+    int barTh = app.print.barWidth; if (barTh < 1) barTh = 1; if (barTh > 6) barTh = 6;
+    int barY  = by + bh - 4 - barTh;
+    uint32_t cur   = channelCurrentSectionDays(c);
+    uint32_t shown = cur > VIS_WINDOW_DAYS ? VIS_WINDOW_DAYS : cur;
+    int fullW = contentR - contentL;
+    int fillW = (int)((uint32_t)fullW * shown / VIS_WINDOW_DAYS);
+    if (fillW < 2) fillW = 2;
+    display.fillRect(contentL, barY, fillW, barTh, SSD1306_WHITE);
+    int tipX = contentL + fillW;
+    if (tipX > contentR) tipX = contentR;
+    display.fillTriangle(tipX - 3, barY - 5, tipX + 3, barY - 5, tipX, barY - 1, SSD1306_WHITE);
+
+    // ── compact field row at the bottom ──
+    char f0[8], f1[8], f2[8];
+    snprintf(f0, sizeof(f0), "Fnt%d", app.print.fontSize);
+    snprintf(f1, sizeof(f1), "Bld%d", app.print.bold);
+    snprintf(f2, sizeof(f2), "Bar%d", app.print.barWidth);
+    const char* fields[SET_COUNT] = { f0, f1, f2, "Done" };
+    int fx = 4;
+    display.setTextSize(1);
+    for (int i = 0; i < SET_COUNT; i++) {
+        display.getTextBounds(fields[i], 0, 0, &x1, &y1, &tw, &th);
+        if (i == app.settingField) {
+            display.fillRect(fx - 1, 54, (int)tw + 2, 9, SSD1306_WHITE);
+            display.setTextColor(SSD1306_BLACK);
+        } else {
+            display.setTextColor(SSD1306_WHITE);
+        }
+        display.setCursor(fx, 55);
+        display.print(fields[i]);
+        display.setTextColor(SSD1306_WHITE);
+        fx += (int)tw + 5;
+    }
 }
 
 // ── Printing splash (stub until the thermal module is wired) ───────────────
