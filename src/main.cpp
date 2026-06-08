@@ -87,8 +87,19 @@ static void handleSerial() {
         }
         Serial.println("SCAN done.");
 
+    } else if (cmd == "LED") {
+        // Map each pin to its physical LED: lights one at a time, 1.5s each.
+        digitalWrite(GREEN_LED, LOW); digitalWrite(RED_LED, LOW); digitalWrite(BUTTON_LED, LOW);
+        Serial.println("RED (GP14) ON...");
+        digitalWrite(RED_LED, HIGH);    delay(1500); digitalWrite(RED_LED, LOW);
+        Serial.println("GREEN (GP15) ON...");
+        digitalWrite(GREEN_LED, HIGH);  delay(1500); digitalWrite(GREEN_LED, LOW);
+        Serial.println("BUTTON (GP1) ON...");
+        digitalWrite(BUTTON_LED, HIGH); delay(1500); digitalWrite(BUTTON_LED, LOW);
+        Serial.println("LED test done.");
+
     } else if (cmd == "HELP") {
-        Serial.println("COMMANDS: RESET DATA | DEMO | PRINT [1-8] | STATUS | BATT | SCAN | HELP");
+        Serial.println("COMMANDS: RESET DATA | DEMO | PRINT [1-8] | STATUS | BATT | SCAN | LED | HELP");
 
     } else if (cmd.length() > 0) {
         Serial.println("Unknown command. Type HELP.");
