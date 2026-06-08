@@ -63,11 +63,21 @@ static void drawNavBar() {
 }
 
 // ── Current-section timeline ──────────────────────────────────────────────
+// 50% checkerboard fill — gives completed sections a lighter "past" texture.
+static void fillDither(int x, int y, int w, int h) {
+    for (int yy = 0; yy < h; yy++)
+        for (int xx = 0; xx < w; xx++)
+            if (((x + xx) + (y + yy)) & 1)
+                display.drawPixel(x + xx, y + yy, SSD1306_WHITE);
+}
+
 // Contiguous section bars within the rolling VIS_WINDOW_DAYS window ending at
 // "now". Each section is a block whose width = its duration; new sections stack
 // to the right onto the still-visible older ones; sections older than the
-// window scroll off the left. A chevron pins the latest date at the right edge.
+// window scroll off the left. The current (ongoing) section is solid; completed
+// sections are dithered. A chevron pins the latest date at the right edge.
 static void drawSectionBars(const Channel& c, int x0, int W, int barY, int barH) {
+    const int GAP = 3;                  // divider between stacked sections
     uint32_t now = nowUnix();
     if (now == 0) return;
     uint32_t winDur   = (uint32_t)VIS_WINDOW_DAYS * SECS_PER_DAY;
@@ -82,9 +92,10 @@ static void drawSectionBars(const Channel& c, int x0, int W, int barY, int barH)
 
         int xa = x0 + (int)((uint64_t)W * (segStart - winStart) / winDur);
         int xb = x0 + (int)((uint64_t)W * (segEnd   - winStart) / winDur);
-        int w  = xb - xa - 1;          // 1px gap so stacked bars stay distinct
+        int w  = xb - xa - GAP;
         if (w < 1) w = 1;
-        display.fillRect(xa, barY, w, barH, SSD1306_WHITE);
+        if (i == c.sectionCount - 1) display.fillRect(xa, barY, w, barH, SSD1306_WHITE); // current: solid
+        else                         fillDither(xa, barY, w, barH);                       // past: dithered
     }
 
     int tipX = x0 + W;                  // chevron = now, at the right edge
