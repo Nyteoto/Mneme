@@ -181,10 +181,11 @@ void loop() {
             handleRotary();
             uiTick();
 
-            // Blink the red status LED (GP14) while a print is in progress.
-            // Runs after updateBatteryLEDs so it overrides the battery state.
+            // Blink the green status LED (GP15) while a print is in progress.
+            // (Red/GP14 wire is currently faulty.) Runs after updateBatteryLEDs
+            // so it overrides the battery state for the duration.
             if (app.ui == UI_PRINTING)
-                digitalWrite(RED_LED, (millis() / 150) % 2 ? HIGH : LOW);
+                digitalWrite(GREEN_LED, (millis() / 150) % 2 ? HIGH : LOW);
 
             checkAutoSleep();
 

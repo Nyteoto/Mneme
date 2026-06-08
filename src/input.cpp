@@ -82,6 +82,7 @@ static void onShortPress() {
 
         case UI_CONFIRM:
             channelMarkSection(app.currentChannel);
+            app.sectionBlinkUntil = now + SECTION_BLINK_MS;   // pulse the button LED
             app.ui = UI_MAIN;
             break;
 
@@ -128,7 +129,12 @@ void handleButton() {
     bool cur = digitalRead(PIN_BUTTON);
     uint32_t now = millis();
 
-    digitalWrite(BUTTON_LED, cur == LOW ? HIGH : LOW);
+    // Pulse the button LED for a moment after a section is cut; otherwise it
+    // simply mirrors the press.
+    if (now < app.sectionBlinkUntil)
+        digitalWrite(BUTTON_LED, (now / 150) % 2 ? HIGH : LOW);
+    else
+        digitalWrite(BUTTON_LED, cur == LOW ? HIGH : LOW);
 
     // press start
     if (cur == LOW && app.lastBtn == HIGH) {

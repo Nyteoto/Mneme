@@ -48,7 +48,8 @@ struct AppState {
     uint8_t currentChannel  = 0;        // 0..NUM_CHANNELS-1, selected by rotary
     uint8_t menuSel         = MENU_PRINT;
     uint8_t settingField    = SET_FONT;
-    uint32_t uiTimer        = 0;        // confirm / printing splash deadline anchor
+    uint32_t uiTimer          = 0;      // confirm / printing splash deadline anchor
+    uint32_t sectionBlinkUntil = 0;     // button-LED pulses until this millis()
 
     // Input tracking
     int  lastRotaryPos      = -1;

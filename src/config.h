@@ -71,6 +71,7 @@
 #define HOLD_MS                 700UL   // long-hold threshold → open menu
 #define CONFIRM_TIMEOUT_MS     6000UL   // "section off?" auto-cancels after this
 #define PRINTING_MS            2500UL   // "Printing..." splash duration (stub)
+#define SECTION_BLINK_MS       1500UL   // button-LED pulse after a section is cut
 
 // ── Enums ─────────────────────────────────────────────────────────────────
 enum PowerSource { POWER_BATTERY, POWER_USB };
