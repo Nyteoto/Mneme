@@ -1,0 +1,1938 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_MCP23X17.h>
+#include <math.h>
+#include "RTClib.h"
+#include <EEPROM.h>
+#include <pico/mutex.h>
+#include <pico/stdlib.h>
+#include <I2S.h>
+
+// Pin Definitions
+#define OLED_MOSI   19
+#define OLED_CLK    18
+#define OLED_DC     16
+#define OLED_CS     17
+#define OLED_RESET  20
+
+#define PIN_BUTTON  0
+#define BUTTON_LED  1
+#define BATT_ADC_PIN 28
+#define GREEN_LED   15
+#define RED_LED     14
+#define VBUS_PIN    24  // Pico VBUS sense pin is GPIO 24
+
+// Audio Pins for MAX98357A
+#define pBCLK 7    // Bit Clock
+#define pDOUT 6    // Data In
+// LRC/WS automatically uses pBCLK + 1 (pin 8)
+
+// Display setup
+Adafruit_SSD1306 display(128, 64, OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
+
+// Audio setup
+I2S audio(OUTPUT, pBCLK, pDOUT);
+bool audioInitialized = false;
+
+// MCP23X17 GPIO Expander for Rotary Selector
+Adafruit_MCP23X17 mcp;
+#define MCP_ADDRESS 0x20
+
+// RTC Setup
+RTC_DS1307 rtc;
+
+// EEPROM size and addresses
+#define EEPROM_SIZE 512
+#define MAGIC_NUMBER_ADDR 0
+#define LEVEL_ADDR 2
+#define EXP_ADDR 6
+#define EXP_REQ_ADDR 10
+#define HEATMAP_LOGGED_TODAY_ADDR 52
+#define BUTTON_COUNT_ADDR 14
+#define LAST_DAY_ADDR 18
+#define DATA_VERSION_ADDR 22
+#define TASK_TIMER_LOGS_ADDR 24
+#define HEATMAP_LAST_DAY_ADDR 36
+#define HEATMAP_STREAK_COUNT_ADDR 40
+#define HEATMAP_GRID_DATA_ADDR 44
+#define AUDIO_VOLUME_ADDR 48
+#define MAGIC_NUMBER 0x55AA
+#define CURRENT_DATA_VERSION 5
+
+// Audio parameters
+#define SAMPLE_RATE 44100
+float globalVolume = 0.2f;  // Default 20% volume, will be loaded from EEPROM
+
+// Power management constants
+#define VOLTAGE_DIVIDER_RATIO 2.0f
+#define ADC_MAX_VALUE 4095.0f
+
+// UPDATED: Healthy battery voltage thresholds for Li-ion longevity
+#define BATTERY_FULL_VOLTAGE 4.05f      // Healthy max charge (was 4.2f)
+#define BATTERY_EMPTY_VOLTAGE 3.45f     // Healthy min discharge (was 3.0f)
+#define BATTERY_CRITICAL_VOLTAGE 3.5f   // Warning threshold (was 3.2f)
+#define BATTERY_WARNING_VOLTAGE 3.6f    // Low battery warning (was 3.4f)
+#define BATTERY_SHUTDOWN_VOLTAGE 3.48f  // Graceful shutdown (was 3.1f)
+#define BATTERY_FLASH_VOLTAGE 3.55f     // Battery flash warning (was 3.3f)
+#define BATTERY_RECOVERY_VOLTAGE 3.6f   // Recovery threshold (was 3.4f)
+
+// UPDATED: Sleep timing - faster transitions to save power
+#define SLEEP_TIMEOUT 600000           // 10 minutes to sleep (was 20 mins)
+#define SHUTDOWN_TIMEOUT 300000        // 5 minutes sleep to shutdown (NEW)
+
+// NEW: Hard cutoff voltage - ABSOLUTE MINIMUM
+#define BATTERY_HARD_CUTOFF 3.3f       // Total shutdown - no recovery except USB
+
+// NEW: Task Evaluation constants
+#define TASK_EVAL_HOLD_THRESHOLD 700   // 800ms to distinguish press vs hold
+#define TASK_EVAL_DISPLAY_TIME 10000
+#define TASK_EVAL_ANIMATION_DURATION 5000   // 10 seconds to display message
+
+// Power states
+enum PowerSource {
+POWER_BATTERY,
+POWER_USB
+};
+
+// Screen states
+enum ScreenMode {
+SCREEN_HOME,
+SCREEN_TASK_INITIATION,
+SCREEN_TASK_PRIORITY,
+SCREEN_HEATMAP,
+SCREEN_COUNT
+};
+
+// Device states
+enum DeviceState {
+STATE_ACTIVE,
+STATE_SLEEP,
+STATE_SHUTDOWN
+};
+
+// NEW: Task Evaluation states
+enum TaskEvalState {
+TASK_EVAL_INACTIVE,
+TASK_EVAL_HOLDING,
+TASK_EVAL_DISPLAYING
+};
+
+// Rotary position mapping (in order from start to end)
+const int ROTARY_ORDER[] = {7, 6, 5, 10, 4, 3, 2, 1, 0, 9};
+const int ROTARY_COUNT = 10;
+
+// NEW: Task Evaluation messages
+const char* TASK_EVAL_MESSAGES[] = {
+"Breathe, breathhe.",
+"How do you feel about that?",
+"We still moving, then.",
+"Did it scare you?",
+"On a scale of 1 to 10, how would you rate it as life changing?",
+"Another step logged.",
+"I see. Maybe a Friend of yours would love to hear it, don't you think?",
+"Attention is getting back to yourself now, does it?",
+"Did it serve you well?",
+"I guess that means it aligned with you, then.",
+"That, is how a King exerts his sovereignty."
+};
+const int TASK_EVAL_MESSAGE_COUNT = 11;
+
+// Level and EXP system
+int levelCounter = 1;
+float currentExp = 0.0f;
+float expForNextLevel = 10.0f;
+unsigned long buttonPressCount = 0;
+int lastSavedDay = -1;
+unsigned long lastSaveTime = 0;
+const unsigned long SAVE_INTERVAL = 3000;
+
+// Screen system
+ScreenMode currentScreen = SCREEN_HOME;
+int lastRotaryIndex = -1;
+
+// NEW: Task Evaluation system
+TaskEvalState taskEvalState = TASK_EVAL_INACTIVE;
+unsigned long taskEvalStartTime = 0;
+unsigned long taskEvalDisplayStartTime = 0;
+int currentEvalMessage = 0;
+
+// Level up animation
+bool levelUpActive = false;
+unsigned long levelUpStartTime = 0;
+const unsigned long LEVEL_UP_DURATION = 8500;
+
+// Task Initiation Mode (2-minute countdown)
+unsigned long taskInitStartTime = 0;
+bool taskInitRunning = false;
+bool taskInitFinished = false;
+const unsigned long TASK_INIT_DURATION = 120000;
+
+// Task Priority Mode (stopwatch)
+unsigned long taskPriorityStartTime = 0;
+bool taskPriorityRunning = false;
+unsigned long taskPrioritySavedTime = 0;
+unsigned long taskPriorityLogs[3] = {0, 0, 0};
+int taskPriorityLogCount = 0;
+bool taskPriorityFirstUseToday = true;
+
+// Heatmap Mode
+int heatmapLastDay = -1;
+int heatmapStreakCount = 0;
+bool heatmapGrid[21] = {false};
+bool heatmapAlreadyLoggedToday = false;
+bool heatmapCompletionFlash = false;
+unsigned long heatmapFlashStartTime = 0;
+const unsigned long HEATMAP_FLASH_DURATION = 2000;
+const int HEATMAP_FLASH_CYCLES = 8;
+
+// Power management
+DeviceState currentDeviceState = STATE_ACTIVE;
+unsigned long lastActivityTime = 0;
+unsigned long sleepStartTime = 0;  // NEW: Track when sleep started
+bool batteryFlashActive = false;
+unsigned long batteryFlashStartTime = 0;
+const unsigned long BATTERY_FLASH_DURATION = 3000;
+int lastStableBatteryPercentage = 100;
+float lastStableVoltage = 4.05f;  // Updated to match new full voltage
+unsigned long lastAmpCalculation = 0;
+float totalPowerDraw = 0.0f;
+int sampleCount = 0;
+
+// NEW: Power optimization tracking
+unsigned long lastPowerSourceCheck = 0;
+const unsigned long POWER_CHECK_INTERVAL = 5000;  // Check every 5 seconds instead of every loop
+
+// Global variables
+PowerSource currentPowerSource = POWER_BATTERY;
+bool usbConnected = false;
+int lastRotaryPosition = -1;
+bool lastButtonState = HIGH;
+unsigned long buttonPressStartTime = 0;
+bool buttonHeld = false;
+const unsigned long HOLD_THRESHOLD = 500;
+
+// Audio functions
+bool initAudio() {
+if (!audioInitialized) {
+if (audio.begin(SAMPLE_RATE)) {
+audioInitialized = true;
+return true;
+} else {
+return false;
+}
+}
+return true;
+}
+
+void shutdownAudio() {
+if (audioInitialized) {
+// Send a short period of silence to properly shut down
+int16_t silence = 0;
+for (int i = 0; i < 50; i++) {
+audio.write(silence);
+audio.write(silence);
+}
+
+```
+// End the audio stream
+audio.end();
+audioInitialized = false;
+
+```
+
+}
+}
+
+void playTone(int freq, int durationMs, float volume) {
+if (!initAudio()) return;
+
+volume = constrain(volume, 0.0, 0.2) * globalVolume;
+
+int samples = (durationMs * SAMPLE_RATE) / 1000;
+float phaseIncrement = (2.0 * PI * freq) / SAMPLE_RATE;
+float currentPhase = 0.0;
+
+for (int i = 0; i < samples; i++) {
+float sample = sin(currentPhase) * volume;
+int16_t audioSample = sample * 32767;
+
+```
+audio.write(audioSample);
+audio.write(audioSample);
+
+currentPhase += phaseIncrement;
+if (currentPhase >= 2.0 * PI) {
+  currentPhase -= 2.0 * PI;
+}
+
+```
+
+}
+
+// Don't shutdown immediately - let system handle it
+// This prevents popping noises from frequent on/off
+}
+
+void playStartupChime() {
+int notes[] = {523, 659, 784}; // C5, E5, G5
+int durations[] = {80, 80, 160};
+
+for (int n = 0; n < 3; n++) {
+playTone(notes[n], durations[n], 0.2);
+delay(30);
+}
+
+// Shutdown audio after chime completes
+delay(50);
+shutdownAudio();
+}
+
+void playLevelUpChime() {
+int notes[] = {784, 1046}; // G5, C6
+int durations[] = {150, 300};
+
+for (int n = 0; n < 2; n++) {
+playTone(notes[n], durations[n], 0.15);
+delay(50);
+}
+
+// Shutdown audio after chime completes
+delay(50);
+shutdownAudio();
+}
+
+void playTaskCompleteDing() {
+playTone(1046, 200, 0.15); // C6
+delay(50);
+playTone(1318, 100, 0.15); // E6
+
+// Shutdown audio after ding completes
+delay(50);
+shutdownAudio();
+}
+
+void playSlowChime() {
+int notes[] = {440, 554, 659}; // A4, C#5, E5
+int durations[] = {200, 200, 400};
+
+for (int n = 0; n < 3; n++) {
+playTone(notes[n], durations[n], 0.12);
+delay(100);
+}
+
+// Shutdown audio after chime completes
+delay(50);
+shutdownAudio();
+}
+
+void saveGameData() {
+EEPROM.put(MAGIC_NUMBER_ADDR, MAGIC_NUMBER);
+EEPROM.put(DATA_VERSION_ADDR, CURRENT_DATA_VERSION);
+EEPROM.put(LEVEL_ADDR, levelCounter);
+EEPROM.put(EXP_ADDR, currentExp);
+EEPROM.put(EXP_REQ_ADDR, expForNextLevel);
+EEPROM.put(BUTTON_COUNT_ADDR, buttonPressCount);
+EEPROM.put(AUDIO_VOLUME_ADDR, globalVolume);
+
+// Save all log slots (including zeros for empty slots)
+for (int i = 0; i < 3; i++) {
+EEPROM.put(TASK_TIMER_LOGS_ADDR + (i * 4), taskPriorityLogs[i]);
+}
+EEPROM.put(TASK_TIMER_LOGS_ADDR + 12, taskPriorityLogCount);
+
+DateTime now = rtc.now();
+int currentDay = now.day();
+EEPROM.put(LAST_DAY_ADDR, currentDay);
+
+EEPROM.put(HEATMAP_LAST_DAY_ADDR, heatmapLastDay);
+EEPROM.put(HEATMAP_STREAK_COUNT_ADDR, heatmapStreakCount);
+
+uint32_t gridBitfield = 0;
+for (int i = 0; i < 21; i++) {
+if (heatmapGrid[i]) {
+gridBitfield |= (1UL << i);
+}
+}
+EEPROM.put(HEATMAP_GRID_DATA_ADDR, gridBitfield);
+
+// NEW: Save if heatmap was logged today
+EEPROM.put(HEATMAP_LOGGED_TODAY_ADDR, heatmapAlreadyLoggedToday);
+
+EEPROM.commit();
+lastSaveTime = millis();
+}
+
+void loadGameData() {
+uint16_t magic;
+uint8_t version;
+EEPROM.get(MAGIC_NUMBER_ADDR, magic);
+
+if (magic == MAGIC_NUMBER) {
+EEPROM.get(DATA_VERSION_ADDR, version);
+
+```
+EEPROM.get(LEVEL_ADDR, levelCounter);
+EEPROM.get(EXP_ADDR, currentExp);
+EEPROM.get(EXP_REQ_ADDR, expForNextLevel);
+EEPROM.get(BUTTON_COUNT_ADDR, buttonPressCount);
+EEPROM.get(LAST_DAY_ADDR, lastSavedDay);
+
+for (int i = 0; i < 3; i++) {
+  EEPROM.get(TASK_TIMER_LOGS_ADDR + (i * 4), taskPriorityLogs[i]);
+}
+EEPROM.get(TASK_TIMER_LOGS_ADDR + 12, taskPriorityLogCount);
+
+// Load audio volume
+if (version >= 4) {
+  EEPROM.get(AUDIO_VOLUME_ADDR, globalVolume);
+} else {
+  globalVolume = 0.2f; // Default 20%
+}
+
+// FIX: Filter out zero-value logs and adjust log count accordingly
+int validLogCount = 0;
+for (int i = 0; i < 3; i++) {
+  if (taskPriorityLogs[i] > 0) {
+    // This is a valid log with actual time data
+    if (i != validLogCount) {
+      // Move valid log to the front
+      taskPriorityLogs[validLogCount] = taskPriorityLogs[i];
+      taskPriorityLogs[i] = 0;
+    }
+    validLogCount++;
+  }
+}
+taskPriorityLogCount = validLogCount;
+
+if (version >= 3) {
+  EEPROM.get(HEATMAP_LAST_DAY_ADDR, heatmapLastDay);
+  EEPROM.get(HEATMAP_STREAK_COUNT_ADDR, heatmapStreakCount);
+
+  uint32_t gridBitfield;
+  EEPROM.get(HEATMAP_GRID_DATA_ADDR, gridBitfield);
+  for (int i = 0; i < 21; i++) {
+    heatmapGrid[i] = (gridBitfield & (1UL << i)) != 0;
+  }
+
+  // NEW: Load if heatmap was logged today (only for version 5+)
+  if (version >= 5) {
+    EEPROM.get(HEATMAP_LOGGED_TODAY_ADDR, heatmapAlreadyLoggedToday);
+  } else {
+    // For older versions, initialize as false
+    heatmapAlreadyLoggedToday = false;
+    // Update data version
+    EEPROM.put(DATA_VERSION_ADDR, CURRENT_DATA_VERSION);
+  }
+} else {
+  heatmapLastDay = -1;
+  heatmapStreakCount = 0;
+  for (int i = 0; i < 21; i++) {
+    heatmapGrid[i] = false;
+  }
+  heatmapAlreadyLoggedToday = false;
+}
+
+if (version != CURRENT_DATA_VERSION) {
+  EEPROM.put(DATA_VERSION_ADDR, CURRENT_DATA_VERSION);
+  EEPROM.commit();
+}
+
+```
+
+} else {
+// No saved data found, initializing defaults
+levelCounter = 1;
+currentExp = 0.0f;
+expForNextLevel = 10.0f;
+buttonPressCount = 0;
+globalVolume = 0.2f;
+for (int i = 0; i < 3; i++) {
+taskPriorityLogs[i] = 0;
+}
+taskPriorityLogCount = 0;
+heatmapLastDay = -1;
+heatmapStreakCount = 0;
+for (int i = 0; i < 21; i++) {
+heatmapGrid[i] = false;
+}
+heatmapAlreadyLoggedToday = false;
+}
+}
+
+void checkDayRollover() {
+DateTime now = rtc.now();
+int currentDay = now.day();
+
+if (lastSavedDay != -1 && currentDay != lastSavedDay) {
+buttonPressCount = 0;
+
+```
+// Reset Task Priority Mode data and set first use flag
+for (int i = 0; i < 3; i++) {
+  taskPriorityLogs[i] = 0;
+}
+taskPriorityLogCount = 0;
+taskPriorityFirstUseToday = true;
+
+lastSavedDay = currentDay;
+
+checkHeatmapStreak(currentDay);
+saveGameData();
+
+```
+
+}
+}
+
+void checkHeatmapStreak(int currentDay) {
+if (heatmapLastDay != -1) {
+int dayDifference = (currentDay - heatmapLastDay + 31) % 31;
+if (dayDifference > 1) {
+resetHeatmapGrid();
+}
+}
+
+// NEW: Reset the logged today flag on day change
+heatmapAlreadyLoggedToday = false;
+}
+void resetHeatmapGrid() {
+heatmapStreakCount = 0;
+for (int i = 0; i < 21; i++) {
+heatmapGrid[i] = false;
+}
+heatmapAlreadyLoggedToday = false;  // Also reset the daily flag
+saveGameData();
+}
+
+void completeHeatmapGrid() {
+heatmapCompletionFlash = true;
+heatmapFlashStartTime = millis();
+addExp(50.0f);
+resetHeatmapGrid();
+}
+
+void updateHeatmapCompletionFlash() {
+if (!heatmapCompletionFlash) return;
+
+unsigned long elapsed = millis() - heatmapFlashStartTime;
+if (elapsed >= HEATMAP_FLASH_DURATION) {
+heatmapCompletionFlash = false;
+}
+}
+
+void handleHeatmapButton() {
+// Check if already logged today (using EEPROM value)
+if (heatmapAlreadyLoggedToday) {
+return;
+}
+
+DateTime now = rtc.now();
+int currentDay = now.day();
+
+if (heatmapLastDay != -1) {
+int dayDifference = (currentDay - heatmapLastDay + 31) % 31;
+if (dayDifference > 1) {
+resetHeatmapGrid();
+return;
+}
+}
+
+heatmapStreakCount++;
+heatmapLastDay = currentDay;
+heatmapAlreadyLoggedToday = true;  // Set flag
+
+if (heatmapStreakCount <= 21) {
+heatmapGrid[heatmapStreakCount - 1] = true;
+
+```
+if (heatmapStreakCount == 21) {
+  completeHeatmapGrid();
+}
+
+```
+
+}
+
+saveGameData();  // This will now save the loggedToday flag too
+}
+
+void drawHeatmapGrid() {
+int gridWidth = 7;
+int gridHeight = 3;
+int boxSize = 6;
+int boxSpacing = 2;
+int totalWidth = (boxSize + boxSpacing) * gridWidth - boxSpacing;
+int totalHeight = (boxSize + boxSpacing) * gridHeight - boxSpacing;
+int startX = (128 - totalWidth) / 2;
+int startY = 20;
+
+bool drawBoxes = true;
+if (heatmapCompletionFlash) {
+unsigned long elapsed = millis() - heatmapFlashStartTime;
+float flashProgress = (float)elapsed / HEATMAP_FLASH_DURATION;
+int flashCycle = (int)(flashProgress * HEATMAP_FLASH_CYCLES * 2);
+drawBoxes = (flashCycle % 2 == 0);
+}
+
+for (int week = 0; week < gridHeight; week++) {
+for (int day = 0; day < gridWidth; day++) {
+int index = week * gridWidth + day;
+int x = startX + day * (boxSize + boxSpacing);
+int y = startY + week * (boxSize + boxSpacing);
+
+```
+  if (heatmapGrid[index] && drawBoxes) {
+    display.fillRect(x, y, boxSize, boxSize, SSD1306_WHITE);
+  } else {
+    display.drawRect(x, y, boxSize, boxSize, SSD1306_WHITE);
+  }
+}
+
+```
+
+}
+}
+
+// NEW: Task Evaluation functions
+void startTaskEvaluation() {
+taskEvalState = TASK_EVAL_HOLDING;
+taskEvalStartTime = millis();
+}
+
+void updateTaskEvaluation() {
+if (taskEvalState == TASK_EVAL_HOLDING) {
+// Just update the circle animation, completion is handled in button release
+} else if (taskEvalState == TASK_EVAL_DISPLAYING) {
+unsigned long displayTime = millis() - taskEvalDisplayStartTime;
+
+```
+if (displayTime >= TASK_EVAL_DISPLAY_TIME) {
+  // Display time completed - return to normal
+  taskEvalState = TASK_EVAL_INACTIVE;
+}
+
+```
+
+}
+}
+
+void drawTaskEvaluation() {
+if (taskEvalState == TASK_EVAL_HOLDING) {
+// Draw expanding circle (NO text, NO percentage)
+unsigned long holdTime = millis() - taskEvalStartTime;
+
+```
+// Use the new animation duration constant
+float progress = constrain((float)holdTime / TASK_EVAL_ANIMATION_DURATION, 0.0f, 1.0f);
+// SLOWER: Use eased progression for smoother, slower expansion
+float easedProgress = pow(progress, 4.0f);
+int centerX = 64;
+int centerY = 40;
+int maxRadius = 80;
+
+int currentRadius = (int)(maxRadius * progress);
+
+// Fill the entire area below y=16 with the circle
+for (int y = 16; y < 64; y++) {
+  for (int x = 0; x < 128; x++) {
+    int dx = x - centerX;
+    int dy = y - centerY;
+    int distance = (int)sqrt(dx*dx + dy*dy);
+
+    if (distance <= currentRadius) {
+      display.drawPixel(x, y, SSD1306_WHITE);
+    }
+  }
+}
+
+```
+
+} else if (taskEvalState == TASK_EVAL_DISPLAYING) {
+// Draw the selected message (NO countdown timer)
+display.setTextSize(1);
+display.setTextWrap(true);
+
+```
+// Clear the message area (below level display)
+display.fillRect(0, 16, 128, 48, SSD1306_BLACK);
+
+// Display the message centered
+const char* message = TASK_EVAL_MESSAGES[currentEvalMessage];
+int16_t x1, y1;
+uint16_t w, h;
+display.getTextBounds(message, 0, 0, &x1, &y1, &w, &h);
+
+int xPos = (128 - w) / 2;
+int yPos = 10 + (48 - h) / 2;
+
+display.setCursor(xPos, yPos);
+display.print(message);
+
+display.setTextWrap(false);
+
+```
+
+}
+}
+
+void startLevelUpAnimation() {
+levelUpActive = true;
+levelUpStartTime = millis();
+playLevelUpChime();  // NEW: Play level up chime
+}
+
+void updateLevelUpAnimation() {
+if (!levelUpActive) return;
+
+unsigned long elapsed = millis() - levelUpStartTime;
+if (elapsed >= LEVEL_UP_DURATION) {
+levelUpActive = false;
+return;
+}
+
+float intensity = 1.0f;
+if (elapsed < 500) {
+intensity = (elapsed / 100) % 2 == 0 ? 1.0f : 0.0f;
+} else if (elapsed < 1500) {
+intensity = (elapsed / 200) % 2 == 0 ? 1.0f : 0.0f;
+} else if (elapsed < 4500) {
+intensity = 1.0f;
+} else {
+float fadeProgress = (elapsed - 4500.0f) / 4000.0f;
+intensity = 1.0f - fadeProgress;
+}
+
+if (intensity > 0.1f) {
+drawLevelUpBar(intensity);
+}
+}
+
+void drawLevelUpBar(float intensity) {
+String levelStr = String(levelCounter);
+if (levelCounter < 10) levelStr = "0" + levelStr;
+
+int16_t x1, y1;
+uint16_t w, h;
+display.getTextBounds(levelStr, 0, 0, &x1, &y1, &w, &h);
+int levelX = (128 - w) / 2;
+int levelY = 16;
+
+int barHeight = 6;
+int barY = levelY - 3 - barHeight;
+
+if (intensity > 0.7f) {
+display.fillRect(levelX, barY, w, barHeight, SSD1306_WHITE);
+} else if (intensity > 0.4f) {
+for (int x = levelX; x < levelX + w; x += 2) {
+for (int y = barY; y < barY + barHeight; y += 2) {
+if ((x + y) % 4 == 0) display.drawPixel(x, y, SSD1306_WHITE);
+}
+}
+} else if (intensity > 0.1f) {
+for (int x = levelX; x < levelX + w; x += 4) {
+for (int y = barY; y < barY + barHeight; y += 4) {
+if ((x + y) % 8 == 0) display.drawPixel(x, y, SSD1306_WHITE);
+}
+}
+}
+}
+
+void handleScreenChange(int direction) {
+if (direction > 0) {
+currentScreen = (ScreenMode)((currentScreen + 1) % SCREEN_COUNT);
+} else if (direction < 0) {
+currentScreen = (ScreenMode)((currentScreen - 1 + SCREEN_COUNT) % SCREEN_COUNT);
+}
+}
+
+void handleTaskInitiationButton() {
+if (!taskInitRunning && !taskInitFinished) {
+taskInitStartTime = millis();
+taskInitRunning = true;
+taskInitFinished = false;
+} else if (taskInitFinished) {
+taskInitRunning = false;
+taskInitFinished = false;
+}
+}
+
+void handleTaskPriorityButton() {
+if (!taskPriorityRunning) {
+taskPriorityStartTime = millis();
+taskPriorityRunning = true;
+} else {
+taskPrioritySavedTime = millis() - taskPriorityStartTime;
+taskPriorityRunning = false;
+
+```
+if (taskPriorityLogCount < 3) {
+  taskPriorityLogs[taskPriorityLogCount] = taskPrioritySavedTime;
+  taskPriorityLogCount++;
+
+  // After first log of the day, switch to multi-log display mode
+  if (taskPriorityFirstUseToday) {
+    taskPriorityFirstUseToday = false;
+  }
+
+  saveGameData();
+}
+
+```
+
+}
+}
+
+void updateTaskInitiationDisplay() {
+display.setTextSize(3);
+display.setCursor(20, 20);
+
+if (taskInitRunning) {
+unsigned long elapsed = millis() - taskInitStartTime;
+
+```
+if (elapsed >= TASK_INIT_DURATION) {
+  taskInitRunning = false;
+  taskInitFinished = true;
+  display.print("00:00");
+  playTaskCompleteDing();  // NEW: Play ding when task complete
+} else {
+  unsigned long remaining = TASK_INIT_DURATION - elapsed;
+  int minutes = remaining / 60000;
+  int seconds = (remaining % 60000) / 1000;
+
+  if (minutes < 10) display.print("0");
+  display.print(minutes);
+  display.print(":");
+  if (seconds < 10) display.print("0");
+  display.print(seconds);
+}
+
+```
+
+} else if (taskInitFinished) {
+if ((millis() / 500) % 2 == 0) display.print("00:00");
+} else {
+display.print("02:00");
+}
+}
+
+void updateTaskPriorityDisplay() {
+// First use of the day - show big timer in center (no logs displayed)
+if (taskPriorityFirstUseToday) {
+if (taskPriorityRunning) {
+// Running timer - show big in center
+unsigned long elapsed = millis() - taskPriorityStartTime;
+int hours = elapsed / 3600000;
+int minutes = (elapsed % 3600000) / 60000;
+int seconds = (elapsed % 60000) / 1000;
+
+```
+  String timeStr = "";
+  if (hours < 10) timeStr += "0";
+  timeStr += String(hours);
+  timeStr += ":";
+  if (minutes < 10) timeStr += "0";
+  timeStr += String(minutes);
+  timeStr += ":";
+  if (seconds < 10) timeStr += "0";
+  timeStr += String(seconds);
+
+  display.setTextSize(2);
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(timeStr, 0, 0, &x1, &y1, &w, &h);
+  int xPos = (128 - w) / 2;
+  display.setCursor(xPos, 20);
+  display.print(timeStr);
+  display.setTextSize(1);
+} else {
+  // Not running - show blinking "00:00:00" big in center
+  if ((millis() / 1000) % 2 == 0) {
+    String timeStr = "00:00:00";
+    display.setTextSize(2);
+    int16_t x1, y1;
+    uint16_t w, h;
+    display.getTextBounds(timeStr, 0, 0, &x1, &y1, &w, &h);
+    int xPos = (128 - w) / 2;
+    display.setCursor(xPos, 20);
+    display.print(timeStr);
+    display.setTextSize(1);
+  }
+}
+
+```
+
+}
+// SUBSEQUENT USES: Has logs today - show small timer at bottom with boxes
+else {
+display.setTextSize(1);
+
+```
+if (taskPriorityRunning) {
+  unsigned long elapsed = millis() - taskPriorityStartTime;
+  int hours = elapsed / 3600000;
+  int minutes = (elapsed % 3600000) / 60000;
+  int seconds = (elapsed % 60000) / 1000;
+
+  String timeStr = "";
+  if (hours < 10) timeStr += "0";
+  timeStr += String(hours);
+  timeStr += ":";
+  if (minutes < 10) timeStr += "0";
+  timeStr += String(minutes);
+  timeStr += ":";
+  if (seconds < 10) timeStr += "0";
+  timeStr += String(seconds);
+
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(timeStr, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor(60, 56);
+  display.print(timeStr);
+} else {
+  // Show blinking "00:00:00" at bottom when stopped
+  if ((millis() / 1000) % 2 == 0) {
+    String timeStr = "00:00:00";
+    int16_t x1, y1;
+    uint16_t w, h;
+    display.getTextBounds(timeStr, 0, 0, &x1, &y1, &w, &h);
+    display.setCursor(60, 56);
+    display.print(timeStr);
+  }
+}
+
+// Show logged times in boxes - MAX 3 BOXES
+for (int i = 0; i < taskPriorityLogCount && i < 3; i++) {
+  int boxY = 16 + (i * 12);
+  display.drawRect(0, boxY, 128, 11, SSD1306_WHITE);
+
+  unsigned long time = taskPriorityLogs[i];
+  int logHours = time / 3600000;
+  int logMinutes = (time % 3600000) / 60000;
+  int logSeconds = (time % 60000) / 1000;
+
+  display.setCursor(3, boxY + 2);
+  if (logHours < 10) display.print("0");
+  display.print(logHours);
+  display.print(":");
+  if (logMinutes < 10) display.print("0");
+  display.print(logMinutes);
+  display.print(":");
+  if (logSeconds < 10) display.print("0");
+  display.print(logSeconds);
+
+  // UPDATED: Changed from 24 hours (86400000) to 16 hours (57600000)
+  float percentage = (time / 57600000.0f) * 100.0f;
+  display.setCursor(70, boxY + 2);
+  display.print("=");
+  display.print(percentage, 1);
+  display.print("%");
+}
+
+```
+
+}
+}
+
+// NEW: Boot screen with loading bar
+void showBootScreen() {
+display.clearDisplay();
+
+int barWidth = 100;
+int barHeight = 10;
+int x = (128 - barWidth) / 2;
+int y = (64 - barHeight) / 2;
+
+// Draw loading bar over 2 seconds
+for (int i = 0; i <= barWidth; i++) {
+display.clearDisplay();
+display.drawRect(x, y, barWidth, barHeight, SSD1306_WHITE);
+display.fillRect(x, y, i, barHeight, SSD1306_WHITE);
+display.display();
+delay(2000 / barWidth);  // Total 2 seconds
+}
+}
+
+// OPTIMIZED: SIMPLIFIED USB detection using VBUS pin
+bool detectPowerSourceOptimized() {
+// Check if it's time to check power source (every 5 seconds)
+if (millis() - lastPowerSourceCheck < POWER_CHECK_INTERVAL) {
+return usbConnected; // Return cached value
+}
+lastPowerSourceCheck = millis();
+
+// Read VBUS pin (GPIO 24) - HIGH when USB is connected
+bool vbusState = digitalRead(VBUS_PIN);
+
+return vbusState;
+}
+
+// OPTIMIZED: Read battery voltage with Arduino-compatible ADC control
+float readBatteryVoltageOptimized() {
+const int NUM_SAMPLES = 8;  // Reduced from 16 for speed
+long totalAdcValue = 0;
+
+// Arduino analogRead already initializes ADC
+for(int i = 0; i < NUM_SAMPLES; i++) {
+delayMicroseconds(100);  // Shorter delay
+totalAdcValue += analogRead(BATT_ADC_PIN);
+}
+
+int adcValue = totalAdcValue / NUM_SAMPLES;
+float adcVoltage = (adcValue / ADC_MAX_VALUE) * 3.3f;
+
+// Arduino doesn't have adc_deinit, but we can set pin to INPUT
+// to reduce leakage through ADC pin
+pinMode(BATT_ADC_PIN, INPUT);
+
+return adcVoltage * VOLTAGE_DIVIDER_RATIO;
+}
+
+// OPTIMIZED: Use VBUS pin for USB detection with caching
+void detectPowerSource() {
+bool newUsbState = detectPowerSourceOptimized();
+
+if (newUsbState != usbConnected) {
+usbConnected = newUsbState;
+currentPowerSource = usbConnected ? POWER_USB : POWER_BATTERY;
+
+```
+// Reset battery tracking when switching to USB
+if (usbConnected) {
+  lastStableVoltage = BATTERY_FULL_VOLTAGE;
+  lastStableBatteryPercentage = 100;
+}
+
+saveGameData();
+
+```
+
+}
+}
+
+void updateStableBatteryPercentage(float currentVoltage) {
+if (currentVoltage < lastStableVoltage) {
+lastStableVoltage = currentVoltage;
+lastStableBatteryPercentage = calculateBatteryPercentage(currentVoltage);
+}
+
+if (currentPowerSource == POWER_USB || currentVoltage > lastStableVoltage + 0.1f) {
+lastStableVoltage = currentVoltage;
+lastStableBatteryPercentage = calculateBatteryPercentage(currentVoltage);
+}
+}
+
+void checkBatteryFlash() {
+if (currentPowerSource == POWER_USB) return;
+
+float currentVoltage = readBatteryVoltageOptimized();
+if (currentVoltage <= BATTERY_FLASH_VOLTAGE && !batteryFlashActive) {
+batteryFlashActive = true;
+batteryFlashStartTime = millis();
+}
+
+if (batteryFlashActive) {
+unsigned long elapsed = millis() - batteryFlashStartTime;
+if (elapsed >= BATTERY_FLASH_DURATION) {
+batteryFlashActive = false;
+}
+}
+}
+
+void calculatePowerDraw() {
+unsigned long currentTime = millis();
+if (currentTime - lastAmpCalculation >= 1000) {
+float voltage = readBatteryVoltageOptimized();
+
+```
+float estimatedCurrent = 0.0f;
+
+switch (currentDeviceState) {
+  case STATE_ACTIVE:
+    estimatedCurrent = audioInitialized ? 90.0f : 85.0f;    // OLED on + CPU active + audio if on
+    break;
+  case STATE_SLEEP:
+    estimatedCurrent = 0.8f;     // OPTIMIZED: Much lower with all improvements
+    break;
+  case STATE_SHUTDOWN:
+    estimatedCurrent = 0.4f;     // OPTIMIZED: Even lower
+    break;
+}
+
+totalPowerDraw += estimatedCurrent;
+sampleCount++;
+
+if (sampleCount >= 10) {
+  float averageCurrent = totalPowerDraw / sampleCount;
+  totalPowerDraw = 0.0f;
+  sampleCount = 0;
+}
+
+lastAmpCalculation = currentTime;
+
+```
+
+}
+}
+
+void checkSleepMode() {
+if (currentDeviceState == STATE_ACTIVE) {
+if (millis() - lastActivityTime >= SLEEP_TIMEOUT) {
+enterSleepMode();
+}
+}
+}
+
+// NEW: Check if we should transition from sleep to shutdown
+void checkSleepToShutdown() {
+if (currentDeviceState == STATE_SLEEP) {
+if (millis() - sleepStartTime >= SHUTDOWN_TIMEOUT) {
+enterShutdownMode();
+}
+}
+}
+
+// OPTIMIZED: Better low-power sleep (TARGET: < 1mA)
+void enterSleepMode() {
+// Save state before sleep
+saveGameData();
+
+// 1. Turn off audio completely
+shutdownAudio();
+
+// 2. Set audio pins to INPUT to prevent floating
+pinMode(pBCLK, INPUT);
+pinMode(pDOUT, INPUT);
+
+// 3. Turn off display but keep status LEDs active
+display.clearDisplay();
+display.display();
+display.ssd1306_command(SSD1306_DISPLAYOFF);
+
+// 4. TURN OFF ALL LEDs (BIG POWER SAVINGS!)
+digitalWrite(BUTTON_LED, LOW);
+digitalWrite(GREEN_LED, LOW);
+digitalWrite(RED_LED, LOW);
+
+// 5. DISABLE ADC COMPLETELY - Set ADC pin to INPUT to prevent leakage
+pinMode(BATT_ADC_PIN, INPUT);  // Set to INPUT to reduce leakage
+
+// 6. Set MCP pins to INPUT to minimize current
+for (int i = 0; i < 11; i++) {
+mcp.pinMode(i, INPUT);
+}
+
+currentDeviceState = STATE_SLEEP;
+sleepStartTime = millis(); // Track when sleep started
+}
+
+// OPTIMIZED: Enter shutdown mode (minimal power)
+void enterShutdownMode() {
+// Turn audio off
+shutdownAudio();
+
+// Set audio pins to INPUT
+pinMode(pBCLK, INPUT);
+pinMode(pDOUT, INPUT);
+
+// Turn everything off except wakeup circuits
+display.ssd1306_command(SSD1306_DISPLAYOFF);
+digitalWrite(BUTTON_LED, LOW);
+digitalWrite(GREEN_LED, LOW);
+digitalWrite(RED_LED, LOW);
+
+// Disable ADC by setting pin to INPUT
+pinMode(BATT_ADC_PIN, INPUT);
+
+currentDeviceState = STATE_SHUTDOWN;
+}
+
+// OPTIMIZED: Wake from sleep with proper re-initialization
+void wakeFromSleep() {
+currentDeviceState = STATE_ACTIVE;
+lastActivityTime = millis();
+
+// Re-initialize ADC by setting pin back to analog
+pinMode(BATT_ADC_PIN, INPUT);  // Just set to INPUT, analogRead works
+
+// Turn display back on
+display.ssd1306_command(SSD1306_DISPLAYON);
+
+// Brief LED flash to indicate wake
+digitalWrite(GREEN_LED, HIGH);
+delay(50);
+digitalWrite(GREEN_LED, LOW);
+
+updateBatteryStatus();
+}
+
+// NEW: HARD CUTOFF at 3.3V - TOTAL SHUTDOWN
+void hardCutoff() {
+saveGameData();
+
+// Turn audio off
+shutdownAudio();
+
+// Turn EVERYTHING off
+display.ssd1306_command(SSD1306_DISPLAYOFF);
+digitalWrite(BUTTON_LED, LOW);
+digitalWrite(GREEN_LED, LOW);
+digitalWrite(RED_LED, LOW);
+
+// Disable all peripherals
+Wire.end();
+SPI.end();
+
+// This is a HARD cutoff - device will not wake until USB is connected
+// or batteries are physically replaced and device is power-cycled
+while(true) {
+// Check every minute if USB might be connected
+delay(60000);
+
+```
+// Minimal power check - if voltage recovers above 3.4V, maybe wake
+float currentVoltage = readBatteryVoltageOptimized();
+if (currentVoltage > 3.4f) {
+  // Voltage recovered - could be USB or new batteries
+  // Force a reset to clear any bad state
+  rp2040.restart(); // Use RP2040-specific restart function
+}
+
+```
+
+}
+}
+
+// UPDATED: Recovery-aware shutdown function with new voltage thresholds
+void gracefulShutdown() {
+saveGameData();
+
+// Turn audio off
+shutdownAudio();
+
+display.clearDisplay();
+display.display();
+display.ssd1306_command(SSD1306_DISPLAYOFF);
+
+digitalWrite(BUTTON_LED, LOW);
+digitalWrite(GREEN_LED, LOW);
+digitalWrite(RED_LED, LOW);
+
+// Instead of permanent shutdown, enter a recovery-aware shutdown state
+unsigned long shutdownStartTime = millis();
+
+while(true) {
+// Check if USB power is now available
+detectPowerSource();
+
+```
+if (currentPowerSource == POWER_USB) {
+  // Reset device state and continue normal operation
+  currentDeviceState = STATE_ACTIVE;
+  lastActivityTime = millis();
+
+  // Reset battery tracking to avoid immediate shutdown
+  float usbVoltage = readBatteryVoltageOptimized();
+  lastStableVoltage = usbVoltage;
+  lastStableBatteryPercentage = 100; // Assume full on USB
+
+  // Turn display back on
+  display.ssd1306_command(SSD1306_DISPLAYON);
+  wakeFromSleep();
+  return; // Exit shutdown and resume normal operation
+}
+
+// Also allow recovery if battery voltage has improved (someone replaced batteries)
+float currentVoltage = readBatteryVoltageOptimized();
+if (currentVoltage > BATTERY_RECOVERY_VOLTAGE) {
+  currentDeviceState = STATE_ACTIVE;
+  lastActivityTime = millis();
+  updateStableBatteryPercentage(currentVoltage);
+  display.ssd1306_command(SSD1306_DISPLAYON);
+  wakeFromSleep();
+  return;
+}
+
+// Only check periodically to save power
+delay(1000);
+
+```
+
+}
+}
+
+// UPDATED: Emergency hardware shutdown at 3.45V (new healthy minimum)
+void emergencyHardwareShutdown() {
+saveGameData();
+
+// Turn audio off
+shutdownAudio();
+
+// Turn everything off
+display.ssd1306_command(SSD1306_DISPLAYOFF);
+digitalWrite(BUTTON_LED, LOW);
+digitalWrite(GREEN_LED, LOW);
+digitalWrite(RED_LED, LOW);
+
+// Stop all CPU activity except minimal power monitoring
+while(true) {
+// Check every 30 seconds if we should wake up
+delay(30000);
+
+```
+float currentVoltage = readBatteryVoltageOptimized();
+detectPowerSource();
+
+// Only wake if USB connected OR battery recovered significantly
+if (currentPowerSource == POWER_USB || currentVoltage > BATTERY_RECOVERY_VOLTAGE) {
+  // Re-initialize hardware
+  display.ssd1306_command(SSD1306_DISPLAYON);
+  currentDeviceState = STATE_ACTIVE;
+  lastActivityTime = millis();
+  wakeFromSleep();
+  return;
+}
+
+// If battery drops below 3.4V, check less frequently
+if (currentVoltage < 3.4f) {
+  delay(60000); // Check only once per minute
+}
+
+```
+
+}
+}
+
+// UPDATED: Check for emergency shutdown and hard cutoff
+void checkEmergencyShutdown() {
+if (currentPowerSource == POWER_USB) return;
+
+float currentVoltage = readBatteryVoltageOptimized();
+
+// HARD CUTOFF at 3.3V - no exceptions
+if (currentVoltage <= BATTERY_HARD_CUTOFF) {
+hardCutoff();
+}
+
+// Emergency shutdown at 3.45V (healthy minimum)
+if (currentVoltage <= BATTERY_EMPTY_VOLTAGE) {
+emergencyHardwareShutdown();
+}
+}
+
+// UPDATED: More conservative shutdown check with new thresholds
+void checkShutdown() {
+if (currentPowerSource == POWER_USB) return;
+
+float currentVoltage = readBatteryVoltageOptimized();
+if (currentVoltage <= BATTERY_SHUTDOWN_VOLTAGE) {
+gracefulShutdown();
+}
+}
+
+// UPDATED: Minimal serial command handler
+void handleSerialCommands() {
+if (Serial.available() > 0) {
+String command = Serial.readStringUntil('\n');
+command.trim();
+
+```
+if (command.equalsIgnoreCase("RESET DATA")) {
+  // Reset all game data to defaults
+  levelCounter = 1;
+  currentExp = 0.0f;
+  expForNextLevel = 10.0f;
+  buttonPressCount = 0;
+
+  // Reset task priority logs
+  for (int i = 0; i < 3; i++) {
+    taskPriorityLogs[i] = 0;
+  }
+  taskPriorityLogCount = 0;
+  taskPriorityFirstUseToday = true;
+
+  // Reset heatmap data
+  heatmapLastDay = -1;
+  heatmapStreakCount = 0;
+  for (int i = 0; i < 21; i++) {
+    heatmapGrid[i] = false;
+  }
+  heatmapAlreadyLoggedToday = false;
+
+  // Reset day tracking
+  DateTime now = rtc.now();
+  lastSavedDay = now.day();
+
+  // Save the reset data to EEPROM
+  saveGameData();
+
+  Serial.println("DATA RESET: All data cleared to defaults");
+
+} else if (command.startsWith("VOL ") || command.startsWith("vol ")) {
+  // Handle volume command: VOL 50 (for 50%)
+  String volStr = command.substring(4);
+  int volPercent = volStr.toInt();
+  if (volPercent >= 0 && volPercent <= 100) {
+    globalVolume = volPercent / 100.0f;
+    saveGameData();
+    Serial.print("VOLUME: Set to ");
+    Serial.print(volPercent);
+    Serial.println("%");
+
+    // Play a test tone at new volume
+    playTone(440, 200, 0.1);
+    delay(50);
+    shutdownAudio();
+  } else {
+    Serial.println("ERROR: Volume must be between 0 and 100");
+  }
+} else if (command.equalsIgnoreCase("VOL") || command.equalsIgnoreCase("vol")) {
+  // Display current volume
+  Serial.print("VOLUME: ");
+  Serial.print((int)(globalVolume * 100));
+  Serial.println("%");
+} else if (command.equalsIgnoreCase("TEST AUDIO") || command.equalsIgnoreCase("test audio")) {
+  // Test audio
+  Serial.println("AUDIO: Testing...");
+  playStartupChime();
+  Serial.println("AUDIO: Test complete");
+} else if (command.equalsIgnoreCase("POWER STATUS") || command.equalsIgnoreCase("power status")) {
+  // Display power status
+  Serial.print("POWER: ");
+  Serial.println(usbConnected ? "USB" : "BATTERY");
+  Serial.print("VOLTAGE: ");
+  Serial.print(readBatteryVoltageOptimized(), 2);
+  Serial.println("V");
+  Serial.print("BATTERY: ");
+  Serial.print(calculateBatteryPercentage(readBatteryVoltageOptimized()));
+  Serial.println("%");
+} else if (command.equalsIgnoreCase("STATUS") || command.equalsIgnoreCase("status")) {
+  // Show current device status
+  Serial.print("LEVEL: ");
+  Serial.println(levelCounter);
+  Serial.print("EXP: ");
+  Serial.print(currentExp, 1);
+  Serial.print("/");
+  Serial.println(expForNextLevel, 1);
+  Serial.print("BUTTONS: ");
+  Serial.println(buttonPressCount);
+  Serial.print("LOGS: ");
+  Serial.println(taskPriorityLogCount);
+  Serial.print("HEATMAP STREAK: ");
+  Serial.println(heatmapStreakCount);
+  Serial.print("STATE: ");
+  switch(currentDeviceState) {
+    case STATE_ACTIVE: Serial.println("ACTIVE"); break;
+    case STATE_SLEEP: Serial.println("SLEEP"); break;
+    case STATE_SHUTDOWN: Serial.println("SHUTDOWN"); break;
+  }
+} else if (command.equalsIgnoreCase("HELP") || command.equalsIgnoreCase("help")) {
+  // Show available commands
+  Serial.println("AVAILABLE COMMANDS:");
+  Serial.println("  RESET DATA    - Reset all persistent data");
+  Serial.println("  VOL X         - Set volume to X% (0-100)");
+  Serial.println("  VOL           - Show current volume");
+  Serial.println("  TEST AUDIO    - Test audio system");
+  Serial.println("  POWER STATUS  - Show power information");
+  Serial.println("  STATUS        - Show device status");
+  Serial.println("  HELP          - Show this help message");
+} else if (command.length() > 0) {
+  Serial.println("ERROR: Unknown command. Type HELP for available commands.");
+}
+
+```
+
+}
+}
+
+void setup() {
+Serial.begin(115200);
+delay(2000);
+Serial.println("MNEME DEVICE READY");
+Serial.println("Type HELP for available commands");
+
+// Initialize with noise from ADC for true randomness
+uint32_t seed = 0;
+for (int i = 0; i < 16; i++) {
+seed = (seed << 2) ^ analogRead(BATT_ADC_PIN) ^ micros();
+delay(1);
+}
+randomSeed(seed);
+
+EEPROM.begin(EEPROM_SIZE);
+
+pinMode(PIN_BUTTON, INPUT_PULLUP);
+pinMode(BUTTON_LED, OUTPUT);
+pinMode(GREEN_LED, OUTPUT);
+pinMode(RED_LED, OUTPUT);
+pinMode(VBUS_PIN, INPUT);  // Configure VBUS pin (GPIO 24) as input
+
+// Initialize ADC for battery monitoring
+analogReadResolution(12);
+pinMode(BATT_ADC_PIN, INPUT);  // Start as INPUT, analogRead will work
+
+// Show boot screen
+if(!display.begin(SSD1306_SWITCHCAPVCC)) {
+while(1);
+}
+display.clearDisplay();
+display.setTextColor(SSD1306_WHITE);
+
+showBootScreen();
+
+Wire.begin();
+
+if (!rtc.begin()) {
+rtc.adjust(DateTime(F(**DATE**), F(**TIME**)));
+}
+
+if (!mcp.begin_I2C(MCP_ADDRESS)) {
+while(1);
+}
+
+for (int i = 0; i < 11; i++) {
+mcp.pinMode(i, INPUT_PULLUP);
+}
+
+// Don't initialize audio yet - will be initialized when needed
+audioInitialized = false;
+
+loadGameData();
+
+taskPriorityFirstUseToday = (taskPriorityLogCount == 0);
+
+checkDayRollover();
+
+detectPowerSource();
+
+performStartupLEDSequence();
+
+lastRotaryPosition = readRotaryPosition();
+lastRotaryIndex = findPositionIndex(lastRotaryPosition);
+
+lastSaveTime = millis();
+lastActivityTime = millis();
+
+float initialVoltage = readBatteryVoltageOptimized();
+lastStableVoltage = initialVoltage;
+lastStableBatteryPercentage = calculateBatteryPercentage(initialVoltage);
+
+// Play startup chime after boot screen
+playStartupChime();
+}
+
+void loop() {
+// Check power source less frequently (optimized)
+detectPowerSource();
+
+if (currentDeviceState == STATE_SHUTDOWN && currentPowerSource == POWER_USB) {
+currentDeviceState = STATE_ACTIVE;
+lastActivityTime = millis();
+// Reset battery tracking
+float usbVoltage = readBatteryVoltageOptimized();
+lastStableVoltage = usbVoltage;
+lastStableBatteryPercentage = 100;
+display.ssd1306_command(SSD1306_DISPLAYON);
+wakeFromSleep();
+}
+
+// Check for emergency shutdown at 3.45V and hard cutoff at 3.3V
+checkEmergencyShutdown();
+
+// Handle serial commands
+handleSerialCommands();
+
+switch (currentDeviceState) {
+case STATE_ACTIVE:
+updateBatteryStatus();
+handleButton();
+handleRotary();
+checkDayRollover();
+updateLevelUpAnimation();
+updateHeatmapCompletionFlash();
+checkBatteryFlash();
+checkSleepMode();
+checkShutdown();
+
+```
+  // Update task evaluation system
+  if (currentScreen == SCREEN_HOME) {
+    updateTaskEvaluation();
+  }
+
+  if (millis() - lastSaveTime > SAVE_INTERVAL) {
+    saveGameData();
+  }
+
+  updateDisplay();
+  break;
+
+case STATE_SLEEP:
+  handleSleepModeInput();
+  checkSleepToShutdown();  // Check if sleep should become shutdown
+  checkEmergencyShutdown();
+  checkShutdown();
+  break;
+
+case STATE_SHUTDOWN:
+  handleSleepModeInput();  // Still allow wakeup from shutdown
+  delay(1000);
+  break;
+
+```
+
+}
+
+calculatePowerDraw();
+delay(10);
+}
+
+// OPTIMIZED: Handle sleep mode input with less frequent checks
+void handleSleepModeInput() {
+static unsigned long lastCheckTime = 0;
+
+// Only check every 50ms instead of every loop iteration
+if (millis() - lastCheckTime < 50) {
+return;
+}
+lastCheckTime = millis();
+
+bool currentButtonState = digitalRead(PIN_BUTTON);
+if (currentButtonState == LOW && lastButtonState == HIGH) {
+wakeFromSleep();
+}
+lastButtonState = currentButtonState;
+
+// Check rotary less frequently in sleep (every 200ms)
+static unsigned long lastRotaryCheck = 0;
+if (millis() - lastRotaryCheck >= 200) {
+int currentPosition = readRotaryPosition();
+if (currentPosition != -1 && currentPosition != lastRotaryPosition) {
+wakeFromSleep();
+lastRotaryPosition = currentPosition;
+}
+lastRotaryCheck = millis();
+}
+}
+
+void performStartupLEDSequence() {
+for(int i = 0; i < 3; i++) {
+digitalWrite(GREEN_LED, HIGH);
+delay(200);
+digitalWrite(GREEN_LED, LOW);
+delay(200);
+}
+digitalWrite(GREEN_LED, HIGH);
+}
+
+// UPDATED: Battery percentage calculation with new healthy range
+int calculateBatteryPercentage(float batteryVoltage) {
+batteryVoltage = constrain(batteryVoltage, BATTERY_EMPTY_VOLTAGE, BATTERY_FULL_VOLTAGE);
+int percentage = (int)((batteryVoltage - BATTERY_EMPTY_VOLTAGE) /
+(BATTERY_FULL_VOLTAGE - BATTERY_EMPTY_VOLTAGE) * 100);
+return constrain(percentage, 0, 100);
+}
+
+void updateBatteryStatus() {
+if(currentPowerSource == POWER_USB) {
+digitalWrite(GREEN_LED, HIGH);
+digitalWrite(RED_LED, LOW);
+} else {
+float batteryVoltage = readBatteryVoltageOptimized();
+
+```
+if(batteryVoltage <= BATTERY_CRITICAL_VOLTAGE) {
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(RED_LED, HIGH);
+} else if(batteryVoltage <= BATTERY_WARNING_VOLTAGE) {
+  digitalWrite(GREEN_LED, (millis() % 1000) < 500);
+  digitalWrite(RED_LED, LOW);
+} else {
+  digitalWrite(GREEN_LED, HIGH);
+  digitalWrite(RED_LED, LOW);
+}
+
+```
+
+}
+}
+
+int readRotaryPosition() {
+for (int i = 0; i < 11; i++) {
+if (mcp.digitalRead(i) == LOW) return i;
+}
+return -1;
+}
+
+int findPositionIndex(int position) {
+for (int i = 0; i < ROTARY_COUNT; i++) {
+if (ROTARY_ORDER[i] == position) return i;
+}
+return -1;
+}
+
+void handleRotary() {
+int currentPosition = readRotaryPosition();
+
+if (currentPosition != -1 && currentPosition != lastRotaryPosition) {
+lastActivityTime = millis();
+
+```
+int currentIndex = findPositionIndex(currentPosition);
+
+if (currentIndex != -1 && lastRotaryIndex != -1) {
+  int direction = currentIndex - lastRotaryIndex;
+  handleScreenChange(direction);
+}
+
+lastRotaryPosition = currentPosition;
+lastRotaryIndex = currentIndex;
+
+```
+
+}
+}
+
+// UPDATED: Handle button with proper press/hold separation
+void handleButton() {
+bool currentButtonState = digitalRead(PIN_BUTTON);
+unsigned long currentTime = millis();
+
+if (currentButtonState == LOW) {
+digitalWrite(BUTTON_LED, HIGH);
+} else {
+digitalWrite(BUTTON_LED, LOW);
+}
+
+// Button pressed
+if (currentButtonState == LOW && lastButtonState == HIGH) {
+lastActivityTime = millis();
+buttonPressStartTime = currentTime;
+buttonHeld = false;
+
+```
+// Don't start task evaluation immediately - wait to see if it's a hold
+
+```
+
+}
+
+// Button held - check if it's becoming a long hold
+if (currentButtonState == LOW && lastButtonState == LOW) {
+if (!buttonHeld && (currentTime - buttonPressStartTime) >= TASK_EVAL_HOLD_THRESHOLD) {
+// This is now a hold - start task evaluation
+buttonHeld = true;
+if (currentScreen == SCREEN_HOME && taskEvalState == TASK_EVAL_INACTIVE) {
+startTaskEvaluation();
+}
+}
+}
+
+// Button released
+if (currentButtonState == HIGH && lastButtonState == LOW) {
+unsigned long pressDuration = currentTime - buttonPressStartTime;
+
+```
+// Handle task evaluation completion if we were holding
+if (currentScreen == SCREEN_HOME && taskEvalState == TASK_EVAL_HOLDING) {
+  // As long as we entered holding state, show random message
+  taskEvalState = TASK_EVAL_DISPLAYING;
+  taskEvalDisplayStartTime = millis();
+
+  // Select RANDOM message every time
+  currentEvalMessage = random(TASK_EVAL_MESSAGE_COUNT);
+  // Add EXP and increment button count (only once per hold)
+  buttonPressCount++;
+  addExp(10.0f);
+  saveGameData();
+
+  // NEW: Play slow chime on long press completion
+  playSlowChime();
+}
+// Handle regular button press (short press)
+else if (!buttonHeld && pressDuration < TASK_EVAL_HOLD_THRESHOLD) {
+  if (currentScreen == SCREEN_HOME) {
+    // Only count as button press if not in task evaluation display
+    if (taskEvalState != TASK_EVAL_DISPLAYING) {
+      buttonPressCount++;
+      addExp(1.0f);
+      saveGameData();
+    }
+  } else if (currentScreen == SCREEN_TASK_INITIATION) {
+    handleTaskInitiationButton();
+  } else if (currentScreen == SCREEN_TASK_PRIORITY) {
+    handleTaskPriorityButton();
+  } else if (currentScreen == SCREEN_HEATMAP) {
+    handleHeatmapButton();
+  }
+}
+
+buttonHeld = false;
+
+```
+
+}
+
+lastButtonState = currentButtonState;
+}
+
+void addExp(float expAmount) {
+currentExp += expAmount;
+
+bool leveledUp = false;
+while (currentExp >= expForNextLevel) {
+currentExp -= expForNextLevel;
+levelCounter++;
+leveledUp = true;
+expForNextLevel = calculateExpForLevel(levelCounter);
+startLevelUpAnimation();
+}
+
+if (leveledUp) saveGameData();
+}
+
+float calculateExpForLevel(int level) {
+float base = 10.0f;
+float growth = log(level + 5.0f);
+float expRequired = base * growth;
+return round(expRequired * 100.0f) / 100.0f;
+}
+
+void updateDisplay() {
+display.clearDisplay();
+
+if (currentDeviceState == STATE_SLEEP) {
+int squareSize = 3;
+int x = (128 - squareSize) / 2;
+int y = (64 - squareSize) / 2;
+display.fillRect(x, y, squareSize, squareSize, SSD1306_WHITE);
+display.display();
+return;
+}
+
+int batteryPercentage;
+if (currentPowerSource == POWER_USB) {
+batteryPercentage = 100;
+} else {
+float currentVoltage = readBatteryVoltageOptimized();
+updateStableBatteryPercentage(currentVoltage);
+batteryPercentage = lastStableBatteryPercentage;
+}
+drawBatteryBar(batteryPercentage);
+
+switch (currentScreen) {
+case SCREEN_HOME: {
+// Draw task evaluation overlay if active
+if (taskEvalState != TASK_EVAL_INACTIVE) {
+drawTaskEvaluation();
+} else {
+// Normal home screen display
+display.setTextSize(4);
+String levelStr = String(levelCounter);
+if (levelCounter < 10) levelStr = "0" + levelStr;
+int16_t x1, y1;
+uint16_t w, h;
+display.getTextBounds(levelStr, 0, 0, &x1, &y1, &w, &h);
+int xPos = (128 - w) / 2;
+display.setCursor(xPos, 16);
+display.print(levelStr);
+
+```
+    drawExpBar();
+    drawButtonCounter();
+  }
+  break;
+}
+
+case SCREEN_TASK_INITIATION:
+  updateTaskInitiationDisplay();
+  break;
+
+case SCREEN_TASK_PRIORITY:
+  updateTaskPriorityDisplay();
+  break;
+
+case SCREEN_HEATMAP:
+  drawHeatmapGrid();
+  break;
+
+```
+
+}
+
+if (levelUpActive) updateLevelUpAnimation();
+display.display();
+}
+
+void drawBatteryBar(int percentage) {
+int barWidth = 20;
+int barHeight = 8;
+int x = 0;
+int y = 56;
+
+bool drawBattery = true;
+if (batteryFlashActive) {
+drawBattery = (millis() / 200) % 2 == 0;
+}
+
+if (drawBattery) {
+display.drawRect(x, y, barWidth, barHeight, SSD1306_WHITE);
+display.fillRect(x + barWidth, y + 2, 2, barHeight - 4, SSD1306_WHITE);
+
+```
+int fillWidth = (barWidth - 2) * percentage / 100;
+if (fillWidth > 0) {
+  display.fillRect(x + 1, y + 1, fillWidth, barHeight - 2, SSD1306_WHITE);
+}
+
+if(currentPowerSource == POWER_USB) {
+  display.setTextSize(1);
+  display.setCursor(x + barWidth + 6, y);
+  display.print("USB");
+} else {
+  display.setTextSize(1);
+  display.setCursor(x + barWidth + 6, y);
+  if (batteryFlashActive) {
+    if ((millis() / 200) % 2 == 0) {
+      display.print(String(percentage) + "%");
+    }
+  } else {
+    display.print(String(percentage) + "%");
+  }
+}
+
+```
+
+}
+}
+
+void drawExpBar() {
+int barWidth = 40;
+int barHeight = 8;
+int x = 128 - barWidth - 2;
+int y = 56;
+
+int expPercentage = (int)((currentExp / expForNextLevel) * 100);
+expPercentage = constrain(expPercentage, 0, 100);
+
+display.drawRect(x, y, barWidth, barHeight, SSD1306_WHITE);
+
+int fillWidth = (barWidth - 2) * expPercentage / 100;
+if (fillWidth > 0) {
+display.fillRect(x + 1, y + 1, fillWidth, barHeight - 2, SSD1306_WHITE);
+}
+}
+
+void drawButtonCounter() {
+int x = 73;
+int y = 56;
+
+display.setTextSize(1);
+display.setCursor(x, y);
+
+if (buttonPressCount < 10) display.print("0");
+display.print(buttonPressCount);
+}
