@@ -133,6 +133,7 @@ void setup() {
 
     powerInit();
     inputInit();
+    printerBegin();
 
     // Fresh device (or wiped EEPROM): seed demo data so the UI has something
     // to render while we design it, then persist it.

@@ -25,9 +25,19 @@
 // ── Audio (amp kept wired; module compiles though fanfare is gone) ────────
 #define AUDIO_SAMPLE_RATE 44100
 
-// ── Thermal printer (UART) — module not yet wired; pin reserved ───────────
-#define PRINTER_TX_PIN  8     // RP2040 → printer RX (placeholder until module lands)
+// ── Thermal printer (GOOJPRT QR204, 58mm, ESC/POS over UART1 = Serial2) ────
+// 3.3V logic both directions (confirmed by multimeter) → no level shifting.
+// Needs its OWN 5–12V 2A+ supply with a COMMON GROUND to the Pico; it cannot
+// run off 3V3/USB. 384 dots/line, 48mm printable, no auto-cutter (tear-off).
+#define PRINTER_TX_PIN   8    // Serial2 TX  → printer RX
+#define PRINTER_RX_PIN   9    // Serial2 RX  ← printer TX (unused for now; status)
+#define PRINTER_DTR_PIN 10    // printer DTR → Pico in: HIGH = busy, LOW = ready
 #define PRINTER_BAUD    9600
+#define PRINTER_DOTS   384    // dots/line for raster image mode (GS v 0)
+// Per-byte DTR safety timeout: if DTR is stuck HIGH (printer fault / mis-wire)
+// we give up waiting so printing can't hang the device. The DTR pin uses an
+// internal pulldown, so a disconnected printer reads "ready" and never blocks.
+#define PRINTER_DTR_TIMEOUT_MS 1500UL
 
 // ── Channels / sections (the new data model) ──────────────────────────────
 #define NUM_CHANNELS    8     // uniquely-readable detents (see ROTARY_ORDER notes)
